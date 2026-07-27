@@ -17,7 +17,7 @@
     "primaryColor": "#2f95a0",
     "ios": {
       "bundleIdentifier": "kr.robom.outbom",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:robom.kr"
@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "kr.robom.outbom",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#eaf6f7"
