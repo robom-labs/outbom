@@ -1,10 +1,12 @@
 // 야외봄 네이티브 홈에서 활동별 출발 판단, 추천 시간, 준비 정보를 한 화면에 제공한다.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   AppState,
   Image,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,8 +21,13 @@ import { ACTIVITIES, ACTIVITY_ORDER, type ActivityKey } from "./src/lib/activiti
 import {
   buildPreparationTips,
   fetchForecastSnapshot,
+  getAirQualityCoverage,
+  getCurrentForecastSnapshot,
+  getForecastAvailability,
   getForecastFreshness,
   getRecommendationState,
+  hasIncompleteCurrentSafetyData,
+  hasIncompleteSafetyData,
   rescoreForecastSnapshot,
   type ForecastSnapshot
 } from "./src/lib/forecast";
@@ -38,6 +45,7 @@ const SEOUL = { latitude: 37.5665, longitude: 126.978, locationName: "서울 기
 const SUPPORT_URL = process.env.EXPO_PUBLIC_SUPPORT_URL ?? "https://robom.kr/support";
 const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL ?? "https://robom.kr/privacy/outbom";
 const OPEN_METEO_URL = "https://open-meteo.com/";
+const OPEN_METEO_LICENSE_URL = "https://open-meteo.com/en/license";
 const locationLabels: Record<LocationState, string> = {
   idle: "요청 전",
   requesting: "권한 확인 중",
@@ -54,7 +62,7 @@ const lightPalette = {
   surfaceAccentSoft: "#f5fbfb",
   text: "#263c3d",
   textMuted: "#657475",
-  textFaint: "#6b7778",
+  textFaint: "#5f6d6e",
   accent: "#2f95a0",
   accentDark: "#1e6670",
   border: "#e8ded1",
@@ -128,7 +136,7 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number) {
 
 function Metric({ label, value, styles }: { label: string; value: string; styles: AppStyles }) {
   return (
-    <View style={styles.metric}>
+    <View accessible accessibilityLabel={`${label}, ${value}`} style={styles.metric}>
       <Text style={styles.metricLabel}>{label}</Text>
       <Text style={styles.metricValue}>{value}</Text>
     </View>
@@ -178,6 +186,7 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const requestSequence = useRef(0);
+  const announcedForecastTime = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -185,12 +194,19 @@ export default function App() {
       .then(([stored, selected]) => {
         if (!active) return;
         const next = stored ? rescoreForecastSnapshot(stored, selected) : null;
+        const storedNow = new Date();
+        const activeStored = next ? getCurrentForecastSnapshot(next, storedNow) : null;
+        const storedAvailability = next ? getForecastAvailability(next, storedNow) : null;
         setActivity(selected);
         setSnapshot(next);
         if (next && next !== stored) void saveForecastSnapshot(next);
         setFeedback(
-          next
+          activeStored
             ? "저장된 마지막 판단을 보여드리고 있어요. 활동을 바꾸면 즉시 다시 계산해요."
+            : next
+              ? storedAvailability === "current-missing"
+                ? "현재 시간의 저장 예보가 비어 있어 새 예보가 필요해요."
+                : "저장된 예보 시간이 모두 지났어요. 새 예보를 확인해 주세요."
             : "현재 위치 또는 서울 기본 예보로 첫 판단을 확인해 보세요."
         );
       })
@@ -211,6 +227,11 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hydrated || Platform.OS !== "ios") return;
+    AccessibilityInfo.announceForAccessibility(feedback);
+  }, [feedback, hydrated]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60_000);
@@ -267,7 +288,7 @@ export default function App() {
     setFeedback(`같은 예보를 ${ACTIVITIES[nextActivity].label} 기준으로 다시 계산했어요.`);
   };
 
-  const useCurrentLocation = async () => {
+  const requestCurrentLocation = async () => {
     const activeRequest = ++requestSequence.current;
     setLocationState("requesting");
     setFeedback("현재 위치 권한을 확인하고 있어요.");
@@ -279,6 +300,7 @@ export default function App() {
         setFeedback(snapshot ? "위치 권한이 없어 저장된 마지막 판단을 유지해요." : "위치 권한 없이도 서울 기본 예보를 사용할 수 있어요.");
         return;
       }
+      setFeedback("현재 위치를 찾고 있어요.");
       if (!(await Location.hasServicesEnabledAsync())) {
         if (activeRequest !== requestSequence.current) return;
         setLocationState("unavailable");
@@ -303,10 +325,46 @@ export default function App() {
     }
   };
 
+  const requestSeoulForecast = () => {
+    setLocationState("idle");
+    void refreshForecast(SEOUL);
+  };
+
   const busy = !hydrated || loading || locationState === "requesting";
-  const preparationTips = snapshot ? buildPreparationTips(snapshot) : [];
+  const forecastAvailability = snapshot ? getForecastAvailability(snapshot, now) : null;
+  const activeSnapshot = snapshot ? getCurrentForecastSnapshot(snapshot, now) : null;
+  const preparationTips = activeSnapshot ? buildPreparationTips(activeSnapshot) : [];
+  const airQualityCoverage = activeSnapshot ? getAirQualityCoverage(activeSnapshot) : null;
+  const safetyDataIncomplete = activeSnapshot ? hasIncompleteSafetyData(activeSnapshot) : false;
+  const currentSafetyDataIncomplete = activeSnapshot ? hasIncompleteCurrentSafetyData(activeSnapshot) : false;
   const freshness = snapshot ? getForecastFreshness(snapshot, now) : null;
-  const recommendationState = snapshot ? getRecommendationState(snapshot) : null;
+  const isStale = freshness?.state === "stale";
+  const isReferenceOnly = isStale || currentSafetyDataIncomplete;
+  const recommendationState = activeSnapshot && !isStale ? getRecommendationState(activeSnapshot) : "limited";
+  const dataWarning = !activeSnapshot
+    ? null
+    : airQualityCoverage !== "complete"
+      ? `${airQualityCoverage === "missing"
+        ? "대기질을 받지 못해 점수와 시간대는 날씨 기준 참고값이에요."
+        : "대기질 일부 시간·항목이 누락돼 해당 시간대는 안전 추천에서 제외했어요."}${safetyDataIncomplete ? " 돌풍·가시거리·기상 상태·적설·주야간 정보가 누락된 시간대도 제외했어요." : ""}`
+      : safetyDataIncomplete
+        ? "돌풍·가시거리·기상 상태·적설·주야간 정보가 누락된 시간대는 안전 추천에서 제외했어요."
+        : null;
+  const activeForecastTime = activeSnapshot?.forecastTime ?? null;
+
+  useEffect(() => {
+    if (!hydrated || Platform.OS !== "ios") return;
+    const previous = announcedForecastTime.current;
+    announcedForecastTime.current = activeForecastTime;
+    if (!previous || previous === activeForecastTime) return;
+    AccessibilityInfo.announceForAccessibility(
+      activeForecastTime
+        ? `시간이 지나 ${formatClock(activeForecastTime)} 예보 기준으로 판단을 갱신했어요.`
+        : forecastAvailability === "current-missing"
+          ? "현재 시간의 저장 예보가 비어 있어 새 예보가 필요해요."
+          : "저장된 예보 시간이 모두 지났어요. 새 예보를 확인해 주세요."
+    );
+  }, [activeForecastTime, forecastAvailability, hydrated]);
 
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
@@ -314,15 +372,15 @@ export default function App() {
         <StatusBar style={isDark ? "light" : "dark"} />
         <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <Image accessibilityIgnoresInvertColors source={require("./assets/icon.png")} style={styles.logo} />
+          <Image accessible={false} accessibilityIgnoresInvertColors source={require("./assets/icon.png")} style={styles.logo} />
           <View style={styles.headerCopy}>
-            <Text style={styles.wordmark}>야외봄</Text>
+            <Text accessibilityRole="header" style={styles.wordmark}>야외봄</Text>
             <Text style={styles.tagline}>바깥바람이 좋은 때</Text>
           </View>
         </View>
 
         <View>
-          <Text style={styles.sectionLabel}>무엇을 하러 나가나요?</Text>
+          <Text accessibilityRole="header" style={styles.sectionLabel}>무엇을 하러 나가나요?</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activityList}>
             {ACTIVITY_ORDER.map((key) => {
               const selected = key === activity;
@@ -348,48 +406,84 @@ export default function App() {
           </ScrollView>
         </View>
 
-        {snapshot ? (
+        {activeSnapshot ? (
           <View style={styles.hero}>
             <View style={styles.heroTop}>
               <View style={styles.heroCopy}>
                 <Text style={[styles.eyebrow, freshness?.state === "stale" ? styles.warningText : null]}>
-                  {snapshot.locationName} · {formatClock(snapshot.forecastTime)} 예보 · {freshness?.label}
+                  {activeSnapshot.locationName} · {formatClock(activeSnapshot.forecastTime)} 예보 · {freshness?.label}
                 </Text>
-                <Text style={styles.judgment}>{snapshot.judgment}</Text>
+                <Text accessibilityRole="header" style={styles.judgment}>
+                  {isStale
+                    ? "저장된 예보는 참고만 하세요"
+                    : currentSafetyDataIncomplete
+                      ? "현재 안전 자료가 부족해 참고만 하세요"
+                      : activeSnapshot.judgment}
+                </Text>
               </View>
-              <View accessible accessibilityLabel={`현재 활동 점수 ${snapshot.score}점`} style={styles.scoreBadge}>
-                <Text style={styles.scoreValue}>{snapshot.score}</Text>
+              <View accessible accessibilityLabel={`${isReferenceOnly ? "참고" : "현재 활동"} 점수 ${activeSnapshot.score}점`} style={styles.scoreBadge}>
+                <Text style={styles.scoreValue}>{activeSnapshot.score}</Text>
                 <Text style={styles.scoreUnit}>점</Text>
               </View>
             </View>
-            <Text style={styles.detail}>{snapshot.detail}</Text>
-            {snapshot.metrics.pm25 === null && snapshot.metrics.pm10 === null ? (
-              <Text accessibilityRole="alert" style={styles.dataWarning}>대기질을 받지 못해 현재 점수는 날씨 기준 참고값이에요.</Text>
-            ) : null}
+            <Text style={styles.detail}>
+              {isStale
+                ? "이 점수와 시간대는 저장 당시 자료라 현재 출발 판단에는 사용할 수 없어요."
+                : currentSafetyDataIncomplete
+                  ? "필수 안전 자료가 빠져 날씨로만 계산한 참고 점수이며 지금 출발 추천으로 확정하지 않아요."
+                  : activeSnapshot.detail}
+            </Text>
+            {dataWarning ? <Text accessibilityRole="alert" style={styles.dataWarning}>{dataWarning}</Text> : null}
             <View style={styles.bestWindow}>
               <View>
                 <Text style={styles.bestLabel}>
-                  {recommendationState === "recommended" ? "앞으로 12시간 중 추천" : "안전한 추천 구간이 없어 가장 나은 시간"}
+                  {isStale ? "오래된 저장 예보 중 가장 나았던 시간" : recommendationState === "recommended" ? "앞으로 12시간 중 추천" : "안전한 추천 구간이 없어 가장 나은 시간"}
                 </Text>
-                <Text style={styles.bestValue}>{formatWindow(snapshot.bestTime, snapshot.bestEndTime)}</Text>
+                <Text style={styles.bestValue}>{formatWindow(activeSnapshot.bestTime, activeSnapshot.bestEndTime)}</Text>
               </View>
-              <Text style={styles.bestScore}>{snapshot.bestScore}점</Text>
+              <Text style={styles.bestScore}>{activeSnapshot.bestScore}점</Text>
             </View>
-            {snapshot.sunrise || snapshot.sunset ? (
+            {activeSnapshot.sunrise || activeSnapshot.sunset ? (
               <Text style={styles.sunTimes}>
-                {snapshot.sunrise ? `일출 ${formatClock(snapshot.sunrise)}` : "일출 미수신"}
+                {activeSnapshot.sunrise ? `일출 ${formatClock(activeSnapshot.sunrise)}` : "일출 미수신"}
                 {" · "}
-                {snapshot.sunset ? `일몰 ${formatClock(snapshot.sunset)}` : "일몰 미수신"}
+                {activeSnapshot.sunset ? `일몰 ${formatClock(activeSnapshot.sunset)}` : "일몰 미수신"}
                 {activity === "hike" ? " · 산행은 일몰 1–2시간 전에 마무리하세요." : ""}
               </Text>
             ) : null}
           </View>
         ) : (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>저장된 출발 판단이 아직 없어요</Text>
-            <Text style={styles.detail}>현재 위치나 서울 기본값으로 한 번 확인하면 마지막 성공 예보를 오프라인에서도 볼 수 있어요.</Text>
+            <Text accessibilityRole="header" style={styles.emptyTitle}>
+              {snapshot
+                ? forecastAvailability === "current-missing"
+                  ? "현재 시간 예보가 비어 있어요"
+                  : "저장된 예보 시간이 모두 지났어요"
+                : "저장된 출발 판단이 아직 없어요"}
+            </Text>
+            <Text style={styles.detail}>
+              {snapshot
+                ? forecastAvailability === "current-missing"
+                  ? "다음 시간 예보를 현재 조건으로 대신 보여주지 않아요. 새 예보를 확인해 주세요."
+                  : "현재 위치나 서울 기본값으로 새 예보를 확인해 주세요."
+                : "현재 위치나 서울 기본값으로 한 번 확인하면 마지막 성공 예보를 오프라인에서도 볼 수 있어요."}
+            </Text>
           </View>
         )}
+
+        {activeSnapshot ? (
+          <View style={styles.sourceCredit}>
+            <Text style={styles.sourceCreditText}>Weather data by</Text>
+            <Pressable accessibilityLabel="예보 원자료 Open-Meteo.com 열기" accessibilityRole="link" onPress={() => void Linking.openURL(OPEN_METEO_URL).catch(() => undefined)} style={styles.sourceCreditLinkButton}>
+              <Text style={styles.sourceCreditLink}>Open-Meteo.com</Text>
+            </Pressable>
+            <Text style={styles.sourceCreditText}>·</Text>
+            <Pressable accessibilityLabel="Open-Meteo CC BY 4.0 라이선스 열기" accessibilityRole="link" onPress={() => void Linking.openURL(OPEN_METEO_LICENSE_URL).catch(() => undefined)} style={styles.sourceCreditLinkButton}>
+              <Text style={styles.sourceCreditLink}>CC BY 4.0</Text>
+            </Pressable>
+            <Text style={styles.sourceCreditText}>· 야외봄 재계산</Text>
+          </View>
+        ) : null}
 
         {snapshot && freshness?.state !== "fresh" ? (
           <View accessibilityRole="alert" style={[styles.freshnessBanner, freshness?.state === "stale" ? styles.freshnessBannerStale : null]}>
@@ -403,7 +497,7 @@ export default function App() {
               accessibilityRole="button"
               accessibilityState={{ disabled: busy }}
               disabled={busy}
-              onPress={() => void useCurrentLocation()}
+              onPress={() => void requestCurrentLocation()}
               style={({ pressed }) => [styles.freshnessAction, pressed && !busy ? styles.actionPressed : null, busy ? styles.actionDisabled : null]}
             >
               <Text style={styles.freshnessActionText}>새 예보 확인</Text>
@@ -414,14 +508,14 @@ export default function App() {
         <View style={styles.card}>
           <View style={styles.locationTop}>
             <View>
-              <Text style={styles.cardTitle}>예보 확인</Text>
+              <Text accessibilityRole="header" style={styles.cardTitle}>예보 확인</Text>
               <Text style={styles.locationState}>{locationLabels[locationState]}</Text>
             </View>
             <View style={[styles.statusDot, locationState === "granted" ? styles.statusDotOn : null]} />
           </View>
           <View style={styles.actions}>
-            <ActionButton label="현재 위치로 확인" disabled={busy} styles={styles} onPress={() => void useCurrentLocation()} />
-            <ActionButton label="서울 기본 예보" secondary disabled={busy} styles={styles} onPress={() => void refreshForecast(SEOUL)} />
+            <ActionButton label="현재 위치로 확인" disabled={busy} styles={styles} onPress={() => void requestCurrentLocation()} />
+            <ActionButton label="서울 기본 예보" secondary disabled={!hydrated} styles={styles} onPress={requestSeoulForecast} />
           </View>
           {(locationState === "denied" || locationState === "unavailable") ? (
             <Pressable accessibilityRole="button" onPress={() => void Linking.openSettings().catch(() => undefined)} style={styles.settingsButton}>
@@ -432,15 +526,15 @@ export default function App() {
           <Text style={styles.caption}>위치는 이 버튼을 누를 때 예보 제공처로만 전송하며, 좌표는 앱에 저장하지 않아요.</Text>
         </View>
 
-        {snapshot ? (
+        {activeSnapshot ? (
           <>
             <View style={styles.card}>
               <View style={styles.cardHeadingRow}>
-                <Text style={styles.cardTitle}>12시간 흐름</Text>
+                <Text accessibilityRole="header" style={styles.cardTitle}>{isStale ? "저장된 시간 흐름" : "12시간 흐름"}</Text>
                 <Text style={styles.cardMeta}>2시간 추천 구간 반영</Text>
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.timeline}>
-                {snapshot.slots.slice(0, 12).map((slot, index) => (
+                {activeSnapshot.slots.slice(0, 12).map((slot, index) => (
                   <View
                     key={slot.time}
                     accessible
@@ -459,29 +553,31 @@ export default function App() {
 
             <View style={styles.card}>
               <View style={styles.cardHeadingRow}>
-                <Text style={styles.cardTitle}>현재 조건</Text>
-                <Text style={styles.cardMeta}>{formatSavedAt(snapshot.generatedAt)} 저장</Text>
+                <Text accessibilityRole="header" style={styles.cardTitle}>
+                  {isStale ? "저장 당시 조건" : currentSafetyDataIncomplete ? "현재 참고 조건" : "현재 조건"}
+                </Text>
+                <Text style={styles.cardMeta}>{formatSavedAt(activeSnapshot.generatedAt)} 저장</Text>
               </View>
               <View style={styles.metrics}>
-                <Metric label="기온" value={`${Math.round(snapshot.metrics.temperature)}°`} styles={styles} />
-                <Metric label="체감" value={`${Math.round(snapshot.metrics.apparentTemperature)}°`} styles={styles} />
-                <Metric label="비" value={snapshot.metrics.precipitationProbability === null ? `${snapshot.metrics.precipitation.toFixed(1)}mm` : `${Math.round(snapshot.metrics.precipitationProbability)}%`} styles={styles} />
-                <Metric label="바람" value={`${snapshot.metrics.windSpeed.toFixed(1)}m/s`} styles={styles} />
-                <Metric label="돌풍" value={formatOptional(snapshot.metrics.windGust, "m/s", 1)} styles={styles} />
-                <Metric label="가시거리" value={formatVisibility(snapshot.metrics.visibility)} styles={styles} />
-                <Metric label="자외선" value={snapshot.metrics.uvIndex.toFixed(1)} styles={styles} />
-                <Metric label="습도" value={formatNullable(snapshot.metrics.relativeHumidity, "%")} styles={styles} />
-                <Metric label="초미세먼지" value={formatNullable(snapshot.metrics.pm25, "㎍/㎥", 1)} styles={styles} />
-                <Metric label="미세먼지" value={formatNullable(snapshot.metrics.pm10, "㎍/㎥", 1)} styles={styles} />
-                <Metric label="시간대" value={snapshot.metrics.isDay === false ? "밤" : snapshot.metrics.isDay === true ? "낮" : "미수신"} styles={styles} />
+                <Metric label="기온" value={`${Math.round(activeSnapshot.metrics.temperature)}°`} styles={styles} />
+                <Metric label="체감" value={`${Math.round(activeSnapshot.metrics.apparentTemperature)}°`} styles={styles} />
+                <Metric label="비" value={activeSnapshot.metrics.precipitationProbability === null ? `${activeSnapshot.metrics.precipitation.toFixed(1)}mm` : `${Math.round(activeSnapshot.metrics.precipitationProbability)}%`} styles={styles} />
+                <Metric label="바람" value={`${activeSnapshot.metrics.windSpeed.toFixed(1)}m/s`} styles={styles} />
+                <Metric label="돌풍" value={formatOptional(activeSnapshot.metrics.windGust, "m/s", 1)} styles={styles} />
+                <Metric label="가시거리" value={formatVisibility(activeSnapshot.metrics.visibility)} styles={styles} />
+                <Metric label="자외선" value={activeSnapshot.metrics.uvIndex.toFixed(1)} styles={styles} />
+                <Metric label="습도" value={formatNullable(activeSnapshot.metrics.relativeHumidity, "%")} styles={styles} />
+                <Metric label="초미세먼지" value={formatNullable(activeSnapshot.metrics.pm25, "㎍/㎥", 1)} styles={styles} />
+                <Metric label="미세먼지" value={formatNullable(activeSnapshot.metrics.pm10, "㎍/㎥", 1)} styles={styles} />
+                <Metric label="시간대" value={activeSnapshot.metrics.isDay === false ? "밤" : activeSnapshot.metrics.isDay === true ? "낮" : "미수신"} styles={styles} />
               </View>
               <Text style={styles.caption}>체감온도·강수·바람·가시거리·자외선·습도·대기질을 선택한 활동 기준으로 함께 계산해요.</Text>
             </View>
 
             <View style={styles.card}>
               <View style={styles.cardHeadingRow}>
-                <Text style={styles.cardTitle}>나가기 전 준비</Text>
-                <Text style={styles.cardMeta}>{formatWindow(snapshot.bestTime, snapshot.bestEndTime)} 기준</Text>
+                <Text accessibilityRole="header" style={styles.cardTitle}>나가기 전 준비</Text>
+                <Text style={styles.cardMeta}>{formatWindow(activeSnapshot.bestTime, activeSnapshot.bestEndTime)} 기준</Text>
               </View>
               {preparationTips.map((tip, index) => (
                 <View key={tip} style={styles.tipRow}>
@@ -502,6 +598,9 @@ export default function App() {
         <View style={styles.footerLinks}>
           <Pressable accessibilityLabel="날씨와 대기질 원자료 Open-Meteo 열기" accessibilityRole="link" onPress={() => void Linking.openURL(OPEN_METEO_URL).catch(() => undefined)} style={styles.footerLinkButton}>
             <Text style={styles.footerLink}>원자료 Open-Meteo</Text>
+          </Pressable>
+          <Pressable accessibilityLabel="Open-Meteo CC BY 4.0 라이선스 열기" accessibilityRole="link" onPress={() => void Linking.openURL(OPEN_METEO_LICENSE_URL).catch(() => undefined)} style={styles.footerLinkButton}>
+            <Text style={styles.footerLink}>CC BY 4.0</Text>
           </Pressable>
           <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(SUPPORT_URL).catch(() => undefined)} style={styles.footerLinkButton}>
             <Text style={styles.footerLink}>지원</Text>
@@ -537,7 +636,7 @@ function createStyles(palette: typeof lightPalette) {
     statusDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: palette.inactive },
     statusDotOn: { backgroundColor: palette.accent },
     hero: { gap: 14, padding: 20, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.borderAccent, borderRadius: 26 },
-    heroTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+    heroTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
     heroCopy: { flex: 1 },
     judgment: { marginTop: 7, color: palette.text, fontSize: 25, lineHeight: 32, fontWeight: "900", letterSpacing: -0.8 },
     scoreBadge: { minWidth: 68, minHeight: 68, flexDirection: "row", alignItems: "baseline", justifyContent: "center", padding: 13, borderRadius: 22, backgroundColor: palette.surfaceAccent },
@@ -545,14 +644,18 @@ function createStyles(palette: typeof lightPalette) {
     scoreUnit: { color: palette.accentDark, fontSize: 12, fontWeight: "800" },
     detail: { color: palette.textMuted, fontSize: 14, lineHeight: 22 },
     dataWarning: { color: palette.accentDark, fontSize: 12, lineHeight: 18, fontWeight: "800" },
-    bestWindow: { minHeight: 64, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 14, backgroundColor: palette.surfaceAccentSoft, borderRadius: 16 },
+    sourceCredit: { minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "center", columnGap: 5, paddingHorizontal: 8 },
+    sourceCreditText: { color: palette.textFaint, fontSize: 11, lineHeight: 17 },
+    sourceCreditLinkButton: { minHeight: 44, justifyContent: "center" },
+    sourceCreditLink: { color: palette.accentDark, fontSize: 11, fontWeight: "800", textDecorationLine: "underline" },
+    bestWindow: { minHeight: 64, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 14, backgroundColor: palette.surfaceAccentSoft, borderRadius: 16 },
     bestLabel: { color: palette.textMuted, fontSize: 12, fontWeight: "700" },
     bestValue: { marginTop: 4, color: palette.accentDark, fontSize: 16, fontWeight: "900" },
     bestScore: { color: palette.accentDark, fontSize: 16, fontWeight: "900" },
     sunTimes: { color: palette.textMuted, fontSize: 12, lineHeight: 18, fontWeight: "700" },
     emptyCard: { gap: 8, padding: 20, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 24 },
     emptyTitle: { color: palette.text, fontSize: 20, fontWeight: "900" },
-    freshnessBanner: { minHeight: 84, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderWidth: 1, borderColor: palette.borderAccent, borderRadius: 20, backgroundColor: palette.surfaceAccentSoft },
+    freshnessBanner: { minHeight: 84, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, padding: 14, borderWidth: 1, borderColor: palette.borderAccent, borderRadius: 20, backgroundColor: palette.surfaceAccentSoft },
     freshnessBannerStale: { borderColor: palette.accent, backgroundColor: palette.surfaceAccent },
     freshnessCopy: { flex: 1 },
     freshnessTitle: { color: palette.text, fontSize: 14, fontWeight: "900" },
@@ -561,7 +664,7 @@ function createStyles(palette: typeof lightPalette) {
     freshnessActionText: { color: isLightPalette(palette) ? "#ffffff" : "#102526", fontSize: 12, fontWeight: "900" },
     card: { gap: 14, padding: 18, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 24 },
     cardTitle: { color: palette.text, fontSize: 18, fontWeight: "900" },
-    cardHeadingRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
+    cardHeadingRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
     cardMeta: { flexShrink: 1, color: palette.textFaint, fontSize: 11, textAlign: "right" },
     locationTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
     metrics: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 8 },

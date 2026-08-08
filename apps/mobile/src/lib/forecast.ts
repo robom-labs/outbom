@@ -79,6 +79,9 @@ export type AirQualityApiResponse = {
   };
 };
 
+export type AirQualityCoverage = "complete" | "partial" | "missing";
+export type ForecastAvailability = "active" | "current-missing" | "expired";
+
 type ScoreResult = Pick<ForecastSlot, "score" | "judgment" | "detail">;
 
 const DEFAULT_FORECAST_API = "https://api.open-meteo.com/v1/forecast";
@@ -163,6 +166,24 @@ function scoreDust(pm25: number | null, pm10: number | null) {
   return clamp(pm25Score * 0.65 + pm10Score * 0.35);
 }
 
+function displayedAirValue(value: number | null) {
+  return value === null ? null : Math.round(value * 10) / 10;
+}
+
+function isBadAir(metrics: ForecastMetrics) {
+  const pm25 = displayedAirValue(metrics.pm25);
+  const pm10 = displayedAirValue(metrics.pm10);
+  return (pm25 !== null && pm25 > 35)
+    || (pm10 !== null && pm10 > 80);
+}
+
+function isVeryBadAir(metrics: ForecastMetrics) {
+  const pm25 = displayedAirValue(metrics.pm25);
+  const pm10 = displayedAirValue(metrics.pm10);
+  return (pm25 !== null && pm25 > 75)
+    || (pm10 !== null && pm10 > 150);
+}
+
 function judgmentFor(score: number, activity: ActivityKey) {
   const label = ACTIVITIES[activity].shortLabel;
   if (score >= 80) return `${label} 지금 좋아요`;
@@ -193,11 +214,11 @@ function detailFor(metrics: ForecastMetrics, activity: ActivityKey) {
   if (hasSnowRisk(metrics)) {
     return "눈과 결빙 가능성이 있어요. 미끄러운 노면에 대비하고 경로를 다시 확인하세요.";
   }
-  if ((metrics.pm25 ?? 0) >= 76 || (metrics.pm10 ?? 0) >= 151) {
-    return "미세먼지가 매우 나빠요. 야외활동을 미루고 공기 상태를 다시 확인하세요.";
+  if (isVeryBadAir(metrics)) {
+    return "시간대 미세먼지 수치가 매우 높아요. 야외활동을 미루고 공기 상태를 다시 확인하세요.";
   }
-  if ((metrics.pm25 ?? 0) >= 36 || (metrics.pm10 ?? 0) >= 81) {
-    return "미세먼지가 나쁨 수준이에요. 2시간 활동은 미루고 짧고 낮은 강도로 조정하세요.";
+  if (isBadAir(metrics)) {
+    return "야외봄 시간대 기준 미세먼지 수치가 높아요. 2시간 활동은 미루고 짧고 낮은 강도로 조정하세요.";
   }
   if (metrics.precipitation >= 1 || (metrics.precipitationProbability ?? 0) >= 70) {
     return "비 가능성이 높아요. 미끄러운 노면과 젖은 장비에 대비하세요.";
@@ -237,8 +258,8 @@ export function scoreActivityConditions(metrics: ForecastMetrics, activity: Acti
   else if (metrics.apparentTemperature >= profile.heatCaps.cautionAt) score = Math.min(score, profile.heatCaps.cautionCap);
   if (metrics.apparentTemperature <= -10) score = Math.min(score, 35);
   else if (metrics.apparentTemperature <= -5) score = Math.min(score, 55);
-  if ((metrics.pm25 ?? 0) >= 76 || (metrics.pm10 ?? 0) >= 151) score = Math.min(score, 30);
-  else if ((metrics.pm25 ?? 0) >= 36 || (metrics.pm10 ?? 0) >= 81) score = Math.min(score, 60);
+  if (isVeryBadAir(metrics)) score = Math.min(score, 30);
+  else if (isBadAir(metrics)) score = Math.min(score, 60);
   if (metrics.windSpeed >= profile.windCap.speed) score = Math.min(score, profile.windCap.score);
   if ((metrics.windGust ?? 0) >= 14) score = Math.min(score, 30);
   if (hasVisibilityBelow(metrics, 200)) score = Math.min(score, 40);
@@ -366,8 +387,7 @@ export function isUnsafeOutdoorSlot(slot: ForecastMetrics, activity: ActivityKey
   if ((slot.windGust ?? 0) >= 14) return true;
   if (hasVisibilityBelow(slot, 200)) return true;
   if (slot.apparentTemperature >= 38) return true;
-  if ((slot.pm25 ?? 0) >= 76) return true;
-  if ((slot.pm10 ?? 0) > 150) return true;
+  if (isBadAir(slot)) return true;
   if (activity === "bike" && (slot.precipitation >= 0.5 || (slot.precipitationProbability ?? 0) >= 70)) return true;
   if ((activity === "hike" || activity === "bike") && hasSnowRisk(slot)) return true;
   if ((activity === "hike" || activity === "bike") && hasWeatherCode(slot, FOG_CODES)) return true;
@@ -375,6 +395,40 @@ export function isUnsafeOutdoorSlot(slot: ForecastMetrics, activity: ActivityKey
   if ((activity === "hike" || activity === "bike") && hasWeatherCode(slot, SEVERE_RAIN_CODES)) return true;
   if (activity === "hike" && slot.isDay === false) return true;
   return false;
+}
+
+function hasCompleteAirQuality(slot: ForecastMetrics) {
+  return slot.pm25 !== null && slot.pm10 !== null;
+}
+
+function hasCompleteSafetySignals(slot: ForecastSlot, activity: ActivityKey) {
+  return slot.windGust !== null
+    && slot.windGust !== undefined
+    && slot.visibility !== null
+    && slot.visibility !== undefined
+    && slot.weatherCode !== null
+    && slot.weatherCode !== undefined
+    && slot.snowfall !== null
+    && slot.snowfall !== undefined
+    && slot.isDay !== null
+    && slot.isDay !== undefined
+    && (activity !== "hike" || Boolean(slot.sunset));
+}
+
+export function getAirQualityCoverage(snapshot: ForecastSnapshot): AirQualityCoverage {
+  const slots = snapshot.slots.slice(0, 12);
+  if (slots.every((slot) => slot.pm25 === null && slot.pm10 === null)) return "missing";
+  if (slots.every(hasCompleteAirQuality)) return "complete";
+  return "partial";
+}
+
+export function hasIncompleteSafetyData(snapshot: ForecastSnapshot) {
+  return snapshot.slots.slice(0, 12).some((slot) => !hasCompleteSafetySignals(slot, snapshot.activity));
+}
+
+export function hasIncompleteCurrentSafetyData(snapshot: ForecastSnapshot) {
+  const current = snapshot.slots[0];
+  return !current || !hasCompleteAirQuality(current) || !hasCompleteSafetySignals(current, snapshot.activity);
 }
 
 function isRecommendedWindow(slot: ForecastSlot, next: ForecastSlot, activity: ActivityKey) {
@@ -396,6 +450,10 @@ function isRecommendedWindow(slot: ForecastSlot, next: ForecastSlot, activity: A
     && startHour <= latestHour
     && hikeSunsetCutoff
     && !rainy
+    && hasCompleteAirQuality(slot)
+    && hasCompleteAirQuality(next)
+    && hasCompleteSafetySignals(slot, activity)
+    && hasCompleteSafetySignals(next, activity)
     && !isUnsafeOutdoorSlot(slot, activity)
     && !isUnsafeOutdoorSlot(next, activity)
     && slot.score >= RECOMMENDATION_MIN_EACH
@@ -496,10 +554,14 @@ export function buildForecastSnapshot(
   if (startIndex < 0) throw new Error("현재 이후 예보가 없습니다.");
   const airQuality = buildAirQualityMap(airQualityResponse);
   const sunTimes = buildSunTimesMap(response);
-  const slots = times
-    .slice(startIndex, startIndex + 13)
-    .map((_, offset) => readSlot(response, airQuality, sunTimes, activity, startIndex + offset))
+  if (times[startIndex].slice(0, 13) !== currentHour) throw new Error("현재 시각 예보가 없습니다.");
+  const currentSlot = readSlot(response, airQuality, sunTimes, activity, startIndex);
+  if (!currentSlot) throw new Error("현재 시각 예보의 핵심 정보가 누락됐습니다.");
+  const futureSlots = times
+    .slice(startIndex + 1, startIndex + 13)
+    .map((_, offset) => readSlot(response, airQuality, sunTimes, activity, startIndex + 1 + offset))
     .filter((slot): slot is ForecastSlot => slot !== null);
+  const slots = [currentSlot, ...futureSlots];
   return assembleSnapshot({
     activity,
     locationName,
@@ -516,6 +578,26 @@ export function rescoreForecastSnapshot(snapshot: ForecastSnapshot, activity: Ac
   }));
   return assembleSnapshot({
     activity,
+    locationName: snapshot.locationName,
+    generatedAt: snapshot.generatedAt,
+    timezone: snapshot.timezone,
+    slots
+  });
+}
+
+export function getForecastAvailability(snapshot: ForecastSnapshot, now = new Date()): ForecastAvailability {
+  const currentHour = hourKey(now, snapshot.timezone);
+  if (snapshot.slots.some((slot) => slot.time.slice(0, 13) === currentHour)) return "active";
+  if (snapshot.slots.some((slot) => slot.time.slice(0, 13) > currentHour)) return "current-missing";
+  return "expired";
+}
+
+export function getCurrentForecastSnapshot(snapshot: ForecastSnapshot, now = new Date()) {
+  if (getForecastAvailability(snapshot, now) !== "active") return null;
+  const currentHour = hourKey(now, snapshot.timezone);
+  const slots = snapshot.slots.filter((slot) => slot.time.slice(0, 13) >= currentHour);
+  return assembleSnapshot({
+    activity: snapshot.activity,
     locationName: snapshot.locationName,
     generatedAt: snapshot.generatedAt,
     timezone: snapshot.timezone,
@@ -551,26 +633,38 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
     snowfall: Math.max(result.snowfall ?? 0, slot.snowfall ?? 0),
     isDay: daylight
   }), recommendationSlots[0]);
+  const minimumApparentTemperature = Math.min(...recommendationSlots.map((slot) => slot.apparentTemperature));
+  const hasThunder = recommendationSlots.some((slot) => (slot.weatherCode ?? 0) >= 95);
+  const hasFreezingPrecipitation = recommendationSlots.some((slot) => hasWeatherCode(slot, FREEZING_PRECIPITATION_CODES));
+  const hasFog = recommendationSlots.some((slot) => hasWeatherCode(slot, FOG_CODES));
+  const hasSnow = recommendationSlots.some(hasSnowRisk);
+  const hasSevereRain = recommendationSlots.some((slot) => hasWeatherCode(slot, SEVERE_RAIN_CODES));
+  const recommendationSunset = recommendationSlots.find((slot) => slot.sunset)?.sunset ?? null;
+  const recommendationDate = recommendationSlots[0]?.time.slice(0, 10) ?? snapshot.forecastTime.slice(0, 10);
+  const datePrefix = recommendationDate === snapshot.forecastTime.slice(0, 10)
+    ? ""
+    : `${Number(recommendationDate.slice(5, 7))}/${Number(recommendationDate.slice(8, 10))} `;
   const priorityTips: string[] = [];
   const optionalTips: string[] = [];
-  if ((metrics.weatherCode ?? 0) >= 95) priorityTips.push("낙뢰가 예상되면 출발하지 말고 실내에서 기다리세요.");
-  if (hasWeatherCode(metrics, FREEZING_PRECIPITATION_CODES)) priorityTips.push("어는 비나 이슬비가 예상돼요. 결빙 노면을 피하고 출발을 미루세요.");
+  if (hasThunder) priorityTips.push("낙뢰가 예상되면 출발하지 말고 실내에서 기다리세요.");
+  if (hasFreezingPrecipitation) priorityTips.push("어는 비나 이슬비가 예상돼요. 결빙 노면을 피하고 출발을 미루세요.");
   if ((metrics.windGust ?? 0) >= 14) priorityTips.push("강한 돌풍이 예상돼요. 나무·간판 주변을 피하고 출발을 다시 판단하세요.");
   else if ((metrics.windGust ?? 0) >= 10) optionalTips.push("돌풍에 대비해 나무·간판 주변을 피하고 헐거운 장비를 고정하세요.");
   if (hasVisibilityBelow(metrics, 200)) priorityTips.push("가시거리가 200m 미만으로 짧아요. 이동을 미루고 안개가 걷힌 뒤 다시 확인하세요.");
-  else if ((snapshot.activity === "hike" || snapshot.activity === "bike") && (hasVisibilityBelow(metrics, 1_000) || hasWeatherCode(metrics, FOG_CODES))) priorityTips.push("안개로 가시거리가 짧아요. 등산·자전거 출발을 미루고 경로를 다시 확인하세요.");
-  if (hasSnowRisk(metrics)) priorityTips.push("눈과 결빙 가능성이 있어요. 미끄럼 방지 장비와 우회 경로를 준비하세요.");
-  if ((snapshot.activity === "hike" || snapshot.activity === "bike") && hasWeatherCode(metrics, SEVERE_RAIN_CODES)) priorityTips.push("강한 비나 소나기가 예상돼요. 등산·자전거 출발을 미루세요.");
+  else if ((snapshot.activity === "hike" || snapshot.activity === "bike") && (hasVisibilityBelow(metrics, 1_000) || hasFog)) priorityTips.push("안개로 가시거리가 짧아요. 등산·자전거 출발을 미루고 경로를 다시 확인하세요.");
+  if (hasSnow) priorityTips.push("눈과 결빙 가능성이 있어요. 미끄럼 방지 장비와 우회 경로를 준비하세요.");
+  if ((snapshot.activity === "hike" || snapshot.activity === "bike") && hasSevereRain) priorityTips.push("강한 비나 소나기가 예상돼요. 등산·자전거 출발을 미루세요.");
   if (metrics.isDay === false) priorityTips.push("야간 활동에는 밝은 조명과 반사 소품을 반드시 챙기세요.");
+  if (isVeryBadAir(metrics)) priorityTips.push("시간대 미세먼지 수치가 매우 높아요. 야외활동을 미루고 공기 상태가 나아진 뒤 다시 확인하세요.");
+  else if (isBadAir(metrics)) priorityTips.push("시간대 미세먼지 수치가 높아요. 2시간 활동은 미루고 더 짧고 낮은 강도로 조정하세요.");
+  if (metrics.apparentTemperature >= 38) priorityTips.push("체감온도가 위험하게 높아요. 야외활동을 미루고 시원한 곳에서 수분을 보충하세요.");
   if (metrics.precipitation >= 0.3 || (metrics.precipitationProbability ?? 0) >= 60) {
     optionalTips.push("방수 겉옷이나 우산을 챙기고 미끄러운 노면을 피하세요.");
   }
-  if ((metrics.pm25 ?? 0) > 35 || (metrics.pm10 ?? 0) > 80) {
-    optionalTips.push("대기질이 좋지 않으면 시간을 줄이고 큰길보다 안쪽 길을 선택하세요.");
-  }
-  if (metrics.apparentTemperature >= 26 || (metrics.relativeHumidity ?? 0) >= 80) {
+  if ((metrics.apparentTemperature >= 26 && metrics.apparentTemperature < 38) || (metrics.relativeHumidity ?? 0) >= 80) {
     optionalTips.push("물 한 병을 챙기고 그늘에서 쉬는 간격을 미리 정하세요.");
   }
+  if (minimumApparentTemperature <= 0) optionalTips.push("체감온도가 낮아요. 보온 겉옷과 미끄러운 노면 대비를 챙기세요.");
   if (metrics.uvIndex >= 3) optionalTips.push("그늘을 우선하고 긴 옷·모자·선글라스·자외선 차단제를 챙기세요.");
   if (metrics.windSpeed >= 8) optionalTips.push("바람을 막는 얇은 겉옷과 안전한 경로를 준비하세요.");
 
@@ -578,8 +672,8 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
     walk: "쿠션 좋은 신발을 신고 휴대폰 배터리를 확인하세요.",
     dog: "리드줄 연결부와 노면 온도를 확인하고 강아지 물을 챙기세요.",
     run: "러닝화 끈을 확인하고 출발 전 5분간 천천히 몸을 푸세요.",
-    hike: snapshot.sunset
-      ? `일몰 ${snapshot.sunset.slice(11, 16)}보다 1–2시간 일찍 하산하고 헤드랜턴·보조배터리를 챙기세요.`
+    hike: recommendationSunset
+      ? `${datePrefix}일몰 ${recommendationSunset.slice(11, 16)}보다 1–2시간 일찍 하산하고 헤드랜턴·보조배터리를 챙기세요.`
       : "하산 시간과 경로를 공유하고 헤드랜턴·보조배터리를 챙기세요.",
     bike: "헬멧을 쓰고 브레이크·타이어 공기압을 출발 전에 확인하세요."
   };
@@ -622,6 +716,16 @@ async function fetchJson<T>(url: URL, signal: AbortSignal) {
   return await response.json() as T;
 }
 
+async function fetchJsonWithTimeout<T>(url: URL, milliseconds: number) {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), milliseconds);
+  try {
+    return await fetchJson<T>(url, controller.signal);
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
 export async function fetchForecastSnapshot(options: {
   latitude: number;
   longitude: number;
@@ -646,17 +750,11 @@ export async function fetchForecastSnapshot(options: {
   forecastUrl.searchParams.set("wind_speed_unit", "ms");
   airQualityUrl.searchParams.set("hourly", "pm2_5,pm10");
 
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), 10_000);
-  try {
-    const [forecastResult, airQualityResult] = await Promise.allSettled([
-      fetchJson<ForecastApiResponse>(forecastUrl, controller.signal),
-      fetchJson<AirQualityApiResponse>(airQualityUrl, controller.signal)
-    ]);
-    if (forecastResult.status === "rejected") throw forecastResult.reason;
-    const airQuality = airQualityResult.status === "fulfilled" ? airQualityResult.value : null;
-    return buildForecastSnapshot(forecastResult.value, airQuality, options.activity, options.locationName);
-  } finally {
-    globalThis.clearTimeout(timeout);
-  }
+  const [forecastResult, airQualityResult] = await Promise.allSettled([
+    fetchJsonWithTimeout<ForecastApiResponse>(forecastUrl, 10_000),
+    fetchJsonWithTimeout<AirQualityApiResponse>(airQualityUrl, 4_000)
+  ]);
+  if (forecastResult.status === "rejected") throw forecastResult.reason;
+  const airQuality = airQualityResult.status === "fulfilled" ? airQualityResult.value : null;
+  return buildForecastSnapshot(forecastResult.value, airQuality, options.activity, options.locationName);
 }

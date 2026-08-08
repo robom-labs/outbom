@@ -3,7 +3,7 @@
     "name": "야외봄",
     "slug": "outbom-mobile",
     "owner": "robom-labs",
-    "version": "0.26.3",
+    "version": "0.26.4",
     "description": "5개 야외활동별 안전 점수, 12시간 추천 구간, 돌풍·낙뢰·결빙·가시거리·일출·일몰·대기질과 준비 정보를 제공하는 야외봄 네이티브 앱",
     "platforms": [
       "ios",
@@ -17,7 +17,7 @@
     "primaryColor": "#2f95a0",
     "ios": {
       "bundleIdentifier": "kr.robom.outbom",
-      "buildNumber": "7",
+      "buildNumber": "8",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:robom.kr"
@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "kr.robom.outbom",
-      "versionCode": 8,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#eaf6f7"

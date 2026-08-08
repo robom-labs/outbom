@@ -6,7 +6,7 @@ import packageInfo from "../../package.json";
 
 describe("native app contract", () => {
   it("Expo SDK 57과 Android/iOS 식별자를 고정한다", () => {
-    expect(packageInfo.version).toBe("0.26.3");
+    expect(packageInfo.version).toBe("0.26.4");
     expect(appConfig.expo.version).toBe(packageInfo.version);
     expect(packageInfo.dependencies.expo).toMatch(/^~57\./);
     expect(packageInfo.dependencies["react-native"]).toBe("0.86.2");
@@ -16,9 +16,9 @@ describe("native app contract", () => {
     expect(appConfig.expo.orientation).toBe("default");
     expect(appConfig.expo.ios.supportsTablet).toBe(true);
     expect(appConfig.expo.ios.bundleIdentifier).toBe("kr.robom.outbom");
-    expect(appConfig.expo.ios.buildNumber).toBe("7");
+    expect(appConfig.expo.ios.buildNumber).toBe("8");
     expect(appConfig.expo.android.package).toBe("kr.robom.outbom");
-    expect(appConfig.expo.android.versionCode).toBe(8);
+    expect(appConfig.expo.android.versionCode).toBe(9);
     expect(appConfig.expo.ios.associatedDomains).toContain("applinks:robom.kr");
     expect(appConfig.expo.android.intentFilters[0]?.data[0]).toMatchObject({
       scheme: "https",
@@ -31,8 +31,10 @@ describe("native app contract", () => {
     expect(Object.keys(easConfig.build).sort()).toEqual(["development", "preview", "production"]);
     expect(easConfig.build.development.developmentClient).toBe(true);
     expect(easConfig.build.preview.distribution).toBe("internal");
+    expect(easConfig.build.production.environment).toBe("production");
     expect(easConfig.build.production.android?.buildType).toBe("app-bundle");
     expect(easConfig.build.production.env?.EXPO_PUBLIC_PRIVACY_URL).toBe("https://robom.kr/privacy/outbom");
+    expect(packageInfo.scripts["eas-build-pre-install"]).toBe("node scripts/verify-production-api.mjs");
   });
 
   it("Android 16 대상 API와 컴파일 SDK를 36으로 고정한다", () => {

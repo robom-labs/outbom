@@ -1,6 +1,6 @@
 {
   "name": "outbom-mobile",
-  "version": "0.26.3",
+  "version": "0.26.4",
   "private": true,
   "main": "index.ts",
   "packageManager": "pnpm@10.17.1",
@@ -15,10 +15,12 @@
     "config": "expo config --type public",
     "doctor": "expo-doctor",
     "typecheck": "tsc --noEmit",
-    "lint": "expo lint",
-    "test": "vitest run",
+    "lint": "expo lint App.tsx index.ts src",
+    "test": "vitest run && node --test scripts/verify-production-api.test.mjs",
     "export:android": "expo export --platform android --output-dir dist/android",
     "export:ios": "expo export --platform ios --output-dir dist/ios",
+    "eas-build-pre-install": "node scripts/verify-production-api.mjs",
+    "verify:production-api": "node scripts/verify-production-api.mjs --strict",
     "verify:security-patches": "node scripts/verify-image-size-patch.mjs",
     "check": "pnpm run config && pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run verify:security-patches && pnpm run export:android && pnpm run export:ios"
   },
