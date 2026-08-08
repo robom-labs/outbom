@@ -3,8 +3,8 @@
     "name": "야외봄",
     "slug": "outbom-mobile",
     "owner": "robom-labs",
-    "version": "0.25.6",
-    "description": "현재 위치의 야외활동 출발 판단과 예보를 저장해 오프라인에서도 확인하는 야외봄 네이티브 앱",
+    "version": "0.26.0",
+    "description": "5개 야외활동별 출발 점수, 12시간 추천 구간, 날씨·대기질과 준비 정보를 제공하는 야외봄 네이티브 앱",
     "platforms": [
       "ios",
       "android"
@@ -17,7 +17,7 @@
     "primaryColor": "#2f95a0",
     "ios": {
       "bundleIdentifier": "kr.robom.outbom",
-      "buildNumber": "3",
+      "buildNumber": "4",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:robom.kr"

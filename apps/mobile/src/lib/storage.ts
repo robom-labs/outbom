@@ -1,38 +1,140 @@
-// 위치 좌표를 제외한 마지막 출발 판단과 예보 요약만 기기 로컬 저장소에 보존한다.
+// 마지막 예보와 선택 활동을 좌표 없이 저장하고 이전 저장 형식을 안전하게 마이그레이션한다.
 import Storage from "expo-sqlite/kv-store";
-import type { ForecastSnapshot } from "./forecast";
+import { isActivityKey, type ActivityKey } from "./activities";
+import { scoreActivityConditions, type ForecastMetrics, type ForecastSlot, type ForecastSnapshot } from "./forecast";
 
-export const LAST_FORECAST_KEY = "outbom:native:last-forecast:v1";
+export const LAST_FORECAST_KEY = "outbom:native:last-forecast:v2";
+export const LEGACY_LAST_FORECAST_KEY = "outbom:native:last-forecast:v1";
+export const SELECTED_ACTIVITY_KEY = "outbom:native:activity:v1";
 
-function isForecastSnapshot(value: unknown): value is ForecastSnapshot {
+type LegacyForecastSnapshot = {
+  schemaVersion: 1;
+  locationName: string;
+  generatedAt: string;
+  forecastTime: string;
+  score: number;
+  judgment: string;
+  detail: string;
+  bestTime: string;
+  bestScore: number;
+  metrics: Omit<ForecastMetrics, "relativeHumidity" | "pm25" | "pm10">;
+};
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
+}
+
+function isMetrics(value: unknown): value is ForecastMetrics {
+  if (!value || typeof value !== "object") return false;
+  const metrics = value as Partial<ForecastMetrics>;
+  return isFiniteNumber(metrics.temperature)
+    && isFiniteNumber(metrics.apparentTemperature)
+    && isFiniteNumber(metrics.precipitation)
+    && isNullableNumber(metrics.precipitationProbability)
+    && isFiniteNumber(metrics.windSpeed)
+    && isFiniteNumber(metrics.uvIndex)
+    && isNullableNumber(metrics.relativeHumidity)
+    && isNullableNumber(metrics.pm25)
+    && isNullableNumber(metrics.pm10);
+}
+
+function isForecastSlot(value: unknown): value is ForecastSlot {
+  if (!isMetrics(value)) return false;
+  const slot = value as Partial<ForecastSlot>;
+  return typeof slot.time === "string"
+    && isFiniteNumber(slot.score)
+    && typeof slot.judgment === "string"
+    && typeof slot.detail === "string";
+}
+
+export function isForecastSnapshot(value: unknown): value is ForecastSnapshot {
   if (!value || typeof value !== "object") return false;
   const snapshot = value as Partial<ForecastSnapshot>;
-  const metrics = snapshot.metrics as Partial<ForecastSnapshot["metrics"]> | undefined;
+  return snapshot.schemaVersion === 2
+    && isActivityKey(snapshot.activity)
+    && typeof snapshot.locationName === "string"
+    && typeof snapshot.generatedAt === "string"
+    && typeof snapshot.timezone === "string"
+    && typeof snapshot.forecastTime === "string"
+    && isFiniteNumber(snapshot.score)
+    && typeof snapshot.judgment === "string"
+    && typeof snapshot.detail === "string"
+    && typeof snapshot.bestTime === "string"
+    && typeof snapshot.bestEndTime === "string"
+    && isFiniteNumber(snapshot.bestScore)
+    && isMetrics(snapshot.metrics)
+    && Array.isArray(snapshot.slots)
+    && snapshot.slots.length > 0
+    && snapshot.slots.every(isForecastSlot);
+}
+
+function isLegacySnapshot(value: unknown): value is LegacyForecastSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<LegacyForecastSnapshot>;
+  const metrics = snapshot.metrics as Partial<LegacyForecastSnapshot["metrics"]> | undefined;
   return snapshot.schemaVersion === 1
     && typeof snapshot.locationName === "string"
     && typeof snapshot.generatedAt === "string"
     && typeof snapshot.forecastTime === "string"
+    && isFiniteNumber(snapshot.score)
     && typeof snapshot.judgment === "string"
     && typeof snapshot.detail === "string"
     && typeof snapshot.bestTime === "string"
-    && typeof snapshot.score === "number"
-    && Number.isFinite(snapshot.score)
-    && typeof snapshot.bestScore === "number"
-    && Number.isFinite(snapshot.bestScore)
-    && typeof metrics?.temperature === "number"
-    && typeof metrics.apparentTemperature === "number"
-    && typeof metrics.precipitation === "number"
-    && (metrics.precipitationProbability === null || typeof metrics.precipitationProbability === "number")
-    && typeof metrics.windSpeed === "number"
-    && typeof metrics.uvIndex === "number";
+    && isFiniteNumber(snapshot.bestScore)
+    && isFiniteNumber(metrics?.temperature)
+    && isFiniteNumber(metrics?.apparentTemperature)
+    && isFiniteNumber(metrics?.precipitation)
+    && isNullableNumber(metrics?.precipitationProbability)
+    && isFiniteNumber(metrics?.windSpeed)
+    && isFiniteNumber(metrics?.uvIndex);
+}
+
+export function migrateLegacySnapshot(legacy: LegacyForecastSnapshot): ForecastSnapshot {
+  const metrics: ForecastMetrics = {
+    ...legacy.metrics,
+    relativeHumidity: null,
+    pm25: null,
+    pm10: null
+  };
+  const scored = scoreActivityConditions(metrics, "walk");
+  const slot: ForecastSlot = { time: legacy.forecastTime, ...metrics, ...scored };
+  return {
+    schemaVersion: 2,
+    activity: "walk",
+    locationName: legacy.locationName,
+    generatedAt: legacy.generatedAt,
+    timezone: "UTC",
+    forecastTime: legacy.forecastTime,
+    score: scored.score,
+    judgment: scored.judgment,
+    detail: scored.detail,
+    bestTime: legacy.forecastTime,
+    bestEndTime: legacy.forecastTime,
+    bestScore: scored.score,
+    metrics,
+    slots: [slot]
+  };
+}
+
+async function readJson(key: string) {
+  const raw = await Storage.getItem(key);
+  return raw ? JSON.parse(raw) as unknown : null;
 }
 
 export async function loadForecastSnapshot() {
   try {
-    const raw = await Storage.getItem(LAST_FORECAST_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return isForecastSnapshot(parsed) ? parsed : null;
+    const current = await readJson(LAST_FORECAST_KEY);
+    if (isForecastSnapshot(current)) return current;
+
+    const legacy = await readJson(LEGACY_LAST_FORECAST_KEY);
+    if (!isLegacySnapshot(legacy)) return null;
+    const migrated = migrateLegacySnapshot(legacy);
+    await Storage.setItem(LAST_FORECAST_KEY, JSON.stringify(migrated));
+    return migrated;
   } catch {
     return null;
   }
@@ -41,6 +143,24 @@ export async function loadForecastSnapshot() {
 export async function saveForecastSnapshot(snapshot: ForecastSnapshot) {
   try {
     await Storage.setItem(LAST_FORECAST_KEY, JSON.stringify(snapshot));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadSelectedActivity(): Promise<ActivityKey> {
+  try {
+    const value = await Storage.getItem(SELECTED_ACTIVITY_KEY);
+    return isActivityKey(value) ? value : "walk";
+  } catch {
+    return "walk";
+  }
+}
+
+export async function saveSelectedActivity(activity: ActivityKey) {
+  try {
+    await Storage.setItem(SELECTED_ACTIVITY_KEY, activity);
     return true;
   } catch {
     return false;
