@@ -6,18 +6,19 @@ import packageInfo from "../../package.json";
 
 describe("native app contract", () => {
   it("Expo SDK 57과 Android/iOS 식별자를 고정한다", () => {
-    expect(packageInfo.version).toBe("0.26.1");
+    expect(packageInfo.version).toBe("0.26.2");
     expect(appConfig.expo.version).toBe(packageInfo.version);
     expect(packageInfo.dependencies.expo).toMatch(/^~57\./);
     expect(packageInfo.dependencies["react-native"]).toBe("0.86.2");
+    expect(packageInfo.dependencies["react-native-safe-area-context"]).toBe("~5.7.0");
     expect(appConfig.expo.scheme).toBe("outbom");
     expect(appConfig.expo.platforms).toEqual(["ios", "android"]);
     expect(appConfig.expo.orientation).toBe("default");
     expect(appConfig.expo.ios.supportsTablet).toBe(true);
     expect(appConfig.expo.ios.bundleIdentifier).toBe("kr.robom.outbom");
-    expect(appConfig.expo.ios.buildNumber).toBe("5");
+    expect(appConfig.expo.ios.buildNumber).toBe("6");
     expect(appConfig.expo.android.package).toBe("kr.robom.outbom");
-    expect(appConfig.expo.android.versionCode).toBe(6);
+    expect(appConfig.expo.android.versionCode).toBe(7);
     expect(appConfig.expo.ios.associatedDomains).toContain("applinks:robom.kr");
     expect(appConfig.expo.android.intentFilters[0]?.data[0]).toMatchObject({
       scheme: "https",

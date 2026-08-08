@@ -1,8 +1,9 @@
 // 활동별 날씨·대기질 점수와 추천 시간, 결측·오래된 예보 처리를 검증한다.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildForecastSnapshot,
   buildPreparationTips,
+  fetchForecastSnapshot,
   getForecastFreshness,
   getRecommendationState,
   isUnsafeOutdoorSlot,
@@ -18,6 +19,11 @@ import { ACTIVITIES as WEB_ACTIVITIES } from "../../../../lib/activity";
 function weatherResponse(overrides: Partial<ForecastApiResponse["hourly"]> = {}): ForecastApiResponse {
   return {
     timezone: "UTC",
+    daily: {
+      time: ["2026-07-16"],
+      sunrise: ["2026-07-16T00:30"],
+      sunset: ["2026-07-16T23:30"]
+    },
     hourly: {
       time: ["2026-07-16T01:00", "2026-07-16T02:00", "2026-07-16T03:00", "2026-07-16T04:00"],
       temperature_2m: [18, 19, 20, 21],
@@ -98,6 +104,8 @@ describe("native activity forecast", () => {
       activity: "walk",
       locationName: "현재 위치",
       forecastTime: "2026-07-16T01:00",
+      sunrise: "2026-07-16T00:30",
+      sunset: "2026-07-16T23:30",
       metrics: { pm25: 12, pm10: 24, relativeHumidity: 55 }
     });
     expect(snapshot.score).toBeGreaterThanOrEqual(80);
@@ -206,6 +214,72 @@ describe("native activity forecast", () => {
 
     expect(snapshot.bestTime).toBe("2026-07-16T06:00");
     expect(getRecommendationState(snapshot)).toBe("recommended");
+  });
+
+  it("결빙성 강수는 모든 활동에서 위험으로 차단한다", () => {
+    const freezingRain = metrics({ weatherCode: 67, precipitation: 0.1, temperature: 1 });
+
+    expect(isUnsafeOutdoorSlot(freezingRain, "walk")).toBe(true);
+    expect(scoreActivityConditions(freezingRain, "walk").score).toBeLessThanOrEqual(15);
+    expect(scoreActivityConditions(freezingRain, "walk").detail).toContain("어는 비");
+  });
+
+  it("안개·폭설·강한 소나기는 등산과 자전거 추천에서 제외한다", () => {
+    expect(isUnsafeOutdoorSlot(metrics({ weatherCode: 45 }), "hike")).toBe(true);
+    expect(isUnsafeOutdoorSlot(metrics({ weatherCode: 45 }), "bike")).toBe(true);
+    expect(isUnsafeOutdoorSlot(metrics({ weatherCode: 45 }), "walk")).toBe(false);
+    expect(isUnsafeOutdoorSlot(metrics({ weatherCode: 86, snowfall: 0.2 }), "bike")).toBe(true);
+    expect(isUnsafeOutdoorSlot(metrics({ weatherCode: 82 }), "hike")).toBe(true);
+    expect(scoreActivityConditions(metrics({ weatherCode: 82 }), "hike").detail).toContain("강한 비");
+  });
+
+  it("등산 추천은 일몰 한 시간 전까지 끝나는 구간만 허용한다", () => {
+    const snapshot = buildForecastSnapshot(
+      {
+        ...weatherResponse({
+          time: ["2026-07-16T16:00", "2026-07-16T17:00", "2026-07-16T18:00", "2026-07-16T19:00"],
+          is_day: [1, 1, 1, 0]
+        }),
+        daily: {
+          time: ["2026-07-16"],
+          sunrise: ["2026-07-16T05:30"],
+          sunset: ["2026-07-16T18:30"]
+        }
+      },
+      null,
+      "hike",
+      "서울",
+      new Date("2026-07-16T16:30:00.000Z")
+    );
+
+    expect(getRecommendationState(snapshot)).toBe("limited");
+    expect(buildPreparationTips(snapshot).some((tip) => tip.includes("일몰 18:30") && tip.includes("헤드랜턴"))).toBe(true);
+  });
+
+  it("실제 예보 요청에 위험 기상과 일출·일몰 필드를 빠짐없이 포함한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:30:00.000Z"));
+    const urls: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      urls.push(url);
+      const body = url.includes("air-quality") ? airResponse() : weatherResponse();
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    try {
+      await fetchForecastSnapshot({ latitude: 37.5665, longitude: 126.978, locationName: "서울", activity: "walk" });
+    } finally {
+      fetchMock.mockRestore();
+      vi.useRealTimers();
+    }
+
+    const forecastUrl = new URL(urls.find((url) => !url.includes("air-quality")) as string);
+    expect(forecastUrl.searchParams.get("daily")).toBe("sunrise,sunset");
+    expect(forecastUrl.searchParams.get("hourly")).toContain("wind_gusts_10m");
+    expect(forecastUrl.searchParams.get("hourly")).toContain("weather_code");
+    expect(forecastUrl.searchParams.get("hourly")).toContain("snowfall");
+    expect(forecastUrl.searchParams.get("hourly")).toContain("is_day");
   });
 
   it("웹과 같은 무강수·시간대·55점·평균 62점 기준으로만 추천한다", () => {

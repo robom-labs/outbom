@@ -36,6 +36,10 @@ function isOptionalNullableBoolean(value: unknown): value is boolean | null | un
   return value === undefined || value === null || typeof value === "boolean";
 }
 
+function isOptionalNullableString(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === "string";
+}
+
 function isMetrics(value: unknown): value is ForecastMetrics {
   if (!value || typeof value !== "object") return false;
   const metrics = value as Partial<ForecastMetrics>;
@@ -58,6 +62,8 @@ function isForecastSlot(value: unknown): value is ForecastSlot {
   if (!isMetrics(value)) return false;
   const slot = value as Partial<ForecastSlot>;
   return typeof slot.time === "string"
+    && isOptionalNullableString(slot.sunrise)
+    && isOptionalNullableString(slot.sunset)
     && isFiniteNumber(slot.score)
     && typeof slot.judgment === "string"
     && typeof slot.detail === "string";
@@ -78,6 +84,8 @@ export function isForecastSnapshot(value: unknown): value is ForecastSnapshot {
     && typeof snapshot.bestTime === "string"
     && typeof snapshot.bestEndTime === "string"
     && isFiniteNumber(snapshot.bestScore)
+    && isOptionalNullableString(snapshot.sunrise)
+    && isOptionalNullableString(snapshot.sunset)
     && isMetrics(snapshot.metrics)
     && Array.isArray(snapshot.slots)
     && snapshot.slots.length > 0

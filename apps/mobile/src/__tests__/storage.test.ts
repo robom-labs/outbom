@@ -25,6 +25,11 @@ vi.mock("expo-sqlite/kv-store", () => ({
 
 const response: ForecastApiResponse = {
   timezone: "UTC",
+  daily: {
+    time: ["2026-07-16"],
+    sunrise: ["2026-07-16T05:30"],
+    sunset: ["2026-07-16T19:30"]
+  },
   hourly: {
     time: ["2026-07-16T01:00", "2026-07-16T02:00"],
     temperature_2m: [18, 19],
@@ -45,6 +50,7 @@ describe("native local storage", () => {
 
     expect(await saveForecastSnapshot(snapshot)).toBe(true);
     await expect(loadForecastSnapshot()).resolves.toEqual(snapshot);
+    expect(snapshot.sunset).toBe("2026-07-16T19:30");
     expect(mockStorage.values.get(LAST_FORECAST_KEY)).not.toContain("latitude");
   });
 

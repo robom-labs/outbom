@@ -6,7 +6,6 @@ import {
   Image,
   Linking,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +14,7 @@ import {
 } from "react-native";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
+import { initialWindowMetrics, SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { ACTIVITIES, ACTIVITY_ORDER, type ActivityKey } from "./src/lib/activities";
 import {
   buildPreparationTips,
@@ -302,9 +302,10 @@ export default function App() {
   const recommendationState = snapshot ? getRecommendationState(snapshot) : null;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar style={isDark ? "light" : "dark"} />
-      <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <SafeAreaView edges={["top", "right", "bottom", "left"]} style={styles.safeArea}>
+        <StatusBar style={isDark ? "light" : "dark"} />
+        <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
           <Image accessibilityIgnoresInvertColors source={require("./assets/icon.png")} style={styles.logo} />
           <View style={styles.headerCopy}>
@@ -367,6 +368,14 @@ export default function App() {
               </View>
               <Text style={styles.bestScore}>{snapshot.bestScore}점</Text>
             </View>
+            {snapshot.sunrise || snapshot.sunset ? (
+              <Text style={styles.sunTimes}>
+                {snapshot.sunrise ? `일출 ${formatClock(snapshot.sunrise)}` : "일출 미수신"}
+                {" · "}
+                {snapshot.sunset ? `일몰 ${formatClock(snapshot.sunset)}` : "일몰 미수신"}
+                {activity === "hike" ? " · 산행은 일몰 1–2시간 전에 마무리하세요." : ""}
+              </Text>
+            ) : null}
           </View>
         ) : (
           <View style={styles.emptyCard}>
@@ -489,8 +498,9 @@ export default function App() {
             <Text style={styles.footerLink}>개인정보 처리방침</Text>
           </Pressable>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -527,6 +537,7 @@ function createStyles(palette: typeof lightPalette) {
     bestLabel: { color: palette.textMuted, fontSize: 12, fontWeight: "700" },
     bestValue: { marginTop: 4, color: palette.accentDark, fontSize: 16, fontWeight: "900" },
     bestScore: { color: palette.accentDark, fontSize: 16, fontWeight: "900" },
+    sunTimes: { color: palette.textMuted, fontSize: 12, lineHeight: 18, fontWeight: "700" },
     emptyCard: { gap: 8, padding: 20, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 24 },
     emptyTitle: { color: palette.text, fontSize: 20, fontWeight: "900" },
     freshnessBanner: { minHeight: 84, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderWidth: 1, borderColor: palette.borderAccent, borderRadius: 20, backgroundColor: palette.surfaceAccentSoft },
