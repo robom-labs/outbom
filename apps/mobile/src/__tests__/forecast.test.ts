@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildForecastSnapshot,
   buildPreparationTips,
+  getForecastFreshness,
+  getRecommendationState,
+  isUnsafeOutdoorSlot,
   rescoreForecastSnapshot,
   scoreActivityConditions,
   type AirQualityApiResponse,
@@ -22,8 +25,12 @@ function weatherResponse(overrides: Partial<ForecastApiResponse["hourly"]> = {})
       precipitation: [0, 0, 0, 0],
       precipitation_probability: [10, 5, 0, 0],
       wind_speed_10m: [2, 1, 1, 1],
+      wind_gusts_10m: [3, 2, 2, 2],
       uv_index: [1, 1, 1, 1],
       relative_humidity_2m: [55, 53, 52, 50],
+      weather_code: [1, 1, 1, 1],
+      snowfall: [0, 0, 0, 0],
+      is_day: [1, 1, 1, 1],
       ...overrides
     }
   };
@@ -56,7 +63,7 @@ function metrics(overrides: Partial<ForecastMetrics> = {}): ForecastMetrics {
 }
 
 describe("native activity forecast", () => {
-  it("웹과 네이티브의 5개 활동 안전 기준을 동일하게 유지한다", () => {
+  it("웹과 네이티브의 5개 활동 점수 프로필을 동일하게 유지한다", () => {
     for (const key of ACTIVITY_ORDER) {
       const mobile = MOBILE_ACTIVITIES[key];
       const web = WEB_ACTIVITIES[key];
@@ -182,5 +189,141 @@ describe("native activity forecast", () => {
 
   it("빈 시간별 예보는 명확히 실패해 이전 저장값을 덮지 않게 한다", () => {
     expect(() => buildForecastSnapshot({ hourly: { time: [] } }, null, "walk", "서울")).toThrow("시간별 예보");
+  });
+
+  it("낙뢰·돌풍 시간대를 추천 구간에서 제외한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T04:00", "2026-07-16T05:00", "2026-07-16T06:00", "2026-07-16T07:00"],
+        weather_code: [95, 95, 1, 1],
+        wind_gusts_10m: [16, 16, 2, 2]
+      }),
+      airResponse(),
+      "hike",
+      "서울",
+      new Date("2026-07-16T04:30:00.000Z")
+    );
+
+    expect(snapshot.bestTime).toBe("2026-07-16T06:00");
+    expect(getRecommendationState(snapshot)).toBe("recommended");
+  });
+
+  it("웹과 같은 무강수·시간대·55점·평균 62점 기준으로만 추천한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00", "2026-07-16T09:00"]
+      }),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T06:30:00.000Z")
+    );
+    const belowEach = {
+      ...snapshot,
+      bestTime: snapshot.slots[0].time,
+      slots: snapshot.slots.map((slot, index) => ({ ...slot, score: index === 0 ? 54 : 70 }))
+    };
+    const belowAverage = {
+      ...snapshot,
+      bestTime: snapshot.slots[0].time,
+      slots: snapshot.slots.map((slot, index) => ({ ...slot, score: index < 2 ? 60 : slot.score }))
+    };
+    const rainy = {
+      ...snapshot,
+      bestTime: snapshot.slots[0].time,
+      slots: snapshot.slots.map((slot, index) => index < 2 ? { ...slot, precipitation: 0.2 } : slot)
+    };
+
+    expect(getRecommendationState(belowEach)).toBe("limited");
+    expect(getRecommendationState(belowAverage)).toBe("limited");
+    expect(getRecommendationState(rainy)).toBe("limited");
+    expect(getRecommendationState(snapshot)).toBe("recommended");
+  });
+
+  it("PM10 매우 나쁨도 안전 추천에서 제외한다", () => {
+    expect(isUnsafeOutdoorSlot(metrics({ pm25: null, pm10: 151 }), "walk")).toBe(true);
+  });
+
+  it("중간 시각이 빠진 슬롯을 연속 2시간 추천으로 묶지 않는다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T06:00", "2026-07-16T08:00", "2026-07-16T09:00", "2026-07-16T10:00"]
+      }),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T06:30:00.000Z")
+    );
+
+    expect(snapshot.bestTime).not.toBe("2026-07-16T06:00");
+    expect(getRecommendationState(snapshot)).toBe("recommended");
+  });
+
+  it("안전한 연속 구간이 없으면 추천이 아니라 제한 상태로 표시한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({ weather_code: [95, 95, 95, 95] }),
+      airResponse(),
+      "bike",
+      "서울",
+      new Date("2026-07-16T01:30:00.000Z")
+    );
+
+    expect(getRecommendationState(snapshot)).toBe("limited");
+    expect(snapshot.bestScore).toBeLessThanOrEqual(15);
+  });
+
+  it("준비 정보는 현재가 아니라 추천 2시간의 조건을 사용한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({ apparent_temperature: [35, 20, 20, 20] }),
+      airResponse(),
+      "run",
+      "서울",
+      new Date("2026-07-16T01:30:00.000Z")
+    );
+    const tips = buildPreparationTips(snapshot);
+
+    expect(snapshot.bestTime).not.toBe(snapshot.forecastTime);
+    expect(tips.some((tip) => tip.includes("물 한 병"))).toBe(false);
+    expect(tips.some((tip) => tip.includes("러닝화"))).toBe(true);
+  });
+
+  it("야간 추천에는 조명과 반사 소품을 우선 안내한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({ is_day: [0, 0, 0, 0] }),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T01:30:00.000Z")
+    );
+
+    expect(buildPreparationTips(snapshot).some((tip) => tip.includes("조명") && tip.includes("반사"))).toBe(true);
+  });
+
+  it("저장 시각과 남은 시간축으로 예보 신선도를 구분한다", () => {
+    const fresh = buildForecastSnapshot(
+      weatherResponse(),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T01:30:00.000Z")
+    );
+
+    expect(getForecastFreshness(fresh, new Date("2026-07-16T02:00:00.000Z")).state).toBe("fresh");
+    expect(getForecastFreshness(fresh, new Date("2026-07-16T04:45:00.000Z")).state).toBe("aging");
+    expect(getForecastFreshness(fresh, new Date("2026-07-16T10:00:00.000Z")).state).toBe("stale");
+  });
+
+  it("자정을 넘긴 저장 예보는 6시간 이내여도 오래된 정보로 강등한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T23:00", "2026-07-17T00:00", "2026-07-17T01:00", "2026-07-17T02:00"]
+      }),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T23:30:00.000Z")
+    );
+
+    expect(getForecastFreshness(snapshot, new Date("2026-07-17T00:15:00.000Z")).state).toBe("stale");
   });
 });

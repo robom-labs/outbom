@@ -71,6 +71,9 @@ describe("native local storage", () => {
 
     const migrated = await loadForecastSnapshot();
     expect(migrated).toMatchObject({ schemaVersion: 2, activity: "walk", locationName: "현재 위치" });
+    expect(migrated?.bestTime).toBe("2026-07-16T02:00");
+    expect(migrated?.bestEndTime).toBe("2026-07-16T03:00");
+    expect(migrated?.timezone).not.toBe("");
     expect(isForecastSnapshot(migrated)).toBe(true);
     expect(mockStorage.values.has(LAST_FORECAST_KEY)).toBe(true);
   });

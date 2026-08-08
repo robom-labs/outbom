@@ -1,7 +1,8 @@
 // 야외봄 네이티브 홈에서 활동별 출발 판단, 추천 시간, 준비 정보를 한 화면에 제공한다.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Image,
   Linking,
   Pressable,
@@ -18,6 +19,8 @@ import { ACTIVITIES, ACTIVITY_ORDER, type ActivityKey } from "./src/lib/activiti
 import {
   buildPreparationTips,
   fetchForecastSnapshot,
+  getForecastFreshness,
+  getRecommendationState,
   rescoreForecastSnapshot,
   type ForecastSnapshot
 } from "./src/lib/forecast";
@@ -98,6 +101,10 @@ function formatNullable(value: number | null, suffix: string, digits = 0) {
   return value === null ? "미수신" : `${value.toFixed(digits)}${suffix}`;
 }
 
+function formatOptional(value: number | null | undefined, suffix: string, digits = 0) {
+  return value === null || value === undefined ? "미수신" : `${value.toFixed(digits)}${suffix}`;
+}
+
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number) {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -161,23 +168,31 @@ export default function App() {
   const [locationState, setLocationState] = useState<LocationState>("idle");
   const [feedback, setFeedback] = useState("마지막 예보를 불러오는 중이에요.");
   const [loading, setLoading] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [now, setNow] = useState(() => new Date());
+  const requestSequence = useRef(0);
 
   useEffect(() => {
     let active = true;
-    void Promise.all([loadForecastSnapshot(), loadSelectedActivity()]).then(([stored, selected]) => {
-      if (!active) return;
-      const next = stored && stored.activity !== selected ? rescoreForecastSnapshot(stored, selected) : stored;
-      setActivity(selected);
-      setSnapshot(next);
-      if (next && next !== stored) void saveForecastSnapshot(next);
-      setFeedback(
-        next
-          ? "저장된 마지막 판단을 보여드리고 있어요. 활동을 바꾸면 즉시 다시 계산해요."
-          : "현재 위치 또는 서울 기본 예보로 첫 판단을 확인해 보세요."
-      );
-    }).catch(() => {
-      if (active) setFeedback("저장된 예보를 읽지 못했어요. 새 예보를 확인해 주세요.");
-    });
+    void Promise.all([loadForecastSnapshot(), loadSelectedActivity()])
+      .then(([stored, selected]) => {
+        if (!active) return;
+        const next = stored ? rescoreForecastSnapshot(stored, selected) : null;
+        setActivity(selected);
+        setSnapshot(next);
+        if (next && next !== stored) void saveForecastSnapshot(next);
+        setFeedback(
+          next
+            ? "저장된 마지막 판단을 보여드리고 있어요. 활동을 바꾸면 즉시 다시 계산해요."
+            : "현재 위치 또는 서울 기본 예보로 첫 판단을 확인해 보세요."
+        );
+      })
+      .catch(() => {
+        if (active) setFeedback("저장된 예보를 읽지 못했어요. 새 예보를 확인해 주세요.");
+      })
+      .finally(() => {
+        if (active) setHydrated(true);
+      });
     void Location.getForegroundPermissionsAsync().then((permission) => {
       if (!active) return;
       if (permission.granted) setLocationState("granted");
@@ -190,22 +205,45 @@ export default function App() {
     };
   }, []);
 
-  const refreshForecast = async (options: { latitude: number; longitude: number; locationName: string }) => {
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      setNow(new Date());
+      void Location.getForegroundPermissionsAsync().then((permission) => {
+        if (permission.granted) setLocationState("granted");
+        else if (!permission.canAskAgain) setLocationState("denied");
+        else setLocationState("idle");
+      }).catch(() => setLocationState("unavailable"));
+    });
+    return () => {
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, []);
+
+  const refreshForecast = async (
+    options: { latitude: number; longitude: number; locationName: string },
+    activeRequest = ++requestSequence.current
+  ) => {
     setLoading(true);
     setFeedback(`${options.locationName}의 ${ACTIVITIES[activity].label} 예보를 확인하고 있어요.`);
     try {
       const next = await fetchForecastSnapshot({ ...options, activity });
+      if (activeRequest !== requestSequence.current) return;
       setSnapshot(next);
       const saved = await saveForecastSnapshot(next);
+      if (activeRequest !== requestSequence.current) return;
       setFeedback(saved ? "새 출발 판단과 12시간 예보를 기기에 저장했어요." : "예보는 갱신했지만 기기 저장은 완료하지 못했어요.");
     } catch {
+      if (activeRequest !== requestSequence.current) return;
       setFeedback(
         snapshot
           ? "네트워크를 확인하지 못해 저장된 마지막 판단을 유지해요."
           : "예보를 불러오지 못했어요. 연결 뒤 다시 시도해 주세요."
       );
     } finally {
-      setLoading(false);
+      if (activeRequest === requestSequence.current) setLoading(false);
     }
   };
 
@@ -223,16 +261,19 @@ export default function App() {
   };
 
   const useCurrentLocation = async () => {
+    const activeRequest = ++requestSequence.current;
     setLocationState("requesting");
     setFeedback("현재 위치 권한을 확인하고 있어요.");
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
+      if (activeRequest !== requestSequence.current) return;
       if (!permission.granted) {
         setLocationState("denied");
         setFeedback(snapshot ? "위치 권한이 없어 저장된 마지막 판단을 유지해요." : "위치 권한 없이도 서울 기본 예보를 사용할 수 있어요.");
         return;
       }
       if (!(await Location.hasServicesEnabledAsync())) {
+        if (activeRequest !== requestSequence.current) return;
         setLocationState("unavailable");
         setFeedback("기기 위치 서비스를 켜거나 서울 기본 예보를 이용해 주세요.");
         return;
@@ -241,20 +282,24 @@ export default function App() {
         Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
         15_000
       );
+      if (activeRequest !== requestSequence.current) return;
       setLocationState("granted");
       await refreshForecast({
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
         locationName: "현재 위치"
-      });
+      }, activeRequest);
     } catch {
+      if (activeRequest !== requestSequence.current) return;
       setLocationState("unavailable");
       setFeedback(snapshot ? "현재 위치를 확인하지 못해 저장된 마지막 판단을 유지해요." : "현재 위치를 확인하지 못했어요. 서울 기본 예보를 이용해 주세요.");
     }
   };
 
-  const busy = loading || locationState === "requesting";
+  const busy = !hydrated || loading || locationState === "requesting";
   const preparationTips = snapshot ? buildPreparationTips(snapshot) : [];
+  const freshness = snapshot ? getForecastFreshness(snapshot, now) : null;
+  const recommendationState = snapshot ? getRecommendationState(snapshot) : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -299,18 +344,25 @@ export default function App() {
           <View style={styles.hero}>
             <View style={styles.heroTop}>
               <View style={styles.heroCopy}>
-                <Text style={styles.eyebrow}>{snapshot.locationName} · {formatClock(snapshot.forecastTime)} 예보</Text>
+                <Text style={[styles.eyebrow, freshness?.state === "stale" ? styles.warningText : null]}>
+                  {snapshot.locationName} · {formatClock(snapshot.forecastTime)} 예보 · {freshness?.label}
+                </Text>
                 <Text style={styles.judgment}>{snapshot.judgment}</Text>
               </View>
-              <View accessibilityLabel={`현재 활동 점수 ${snapshot.score}점`} style={styles.scoreBadge}>
+              <View accessible accessibilityLabel={`현재 활동 점수 ${snapshot.score}점`} style={styles.scoreBadge}>
                 <Text style={styles.scoreValue}>{snapshot.score}</Text>
                 <Text style={styles.scoreUnit}>점</Text>
               </View>
             </View>
             <Text style={styles.detail}>{snapshot.detail}</Text>
+            {snapshot.metrics.pm25 === null && snapshot.metrics.pm10 === null ? (
+              <Text accessibilityRole="alert" style={styles.dataWarning}>대기질을 받지 못해 현재 점수는 날씨 기준 참고값이에요.</Text>
+            ) : null}
             <View style={styles.bestWindow}>
               <View>
-                <Text style={styles.bestLabel}>앞으로 12시간 중 추천</Text>
+                <Text style={styles.bestLabel}>
+                  {recommendationState === "recommended" ? "앞으로 12시간 중 추천" : "안전한 추천 구간이 없어 가장 나은 시간"}
+                </Text>
                 <Text style={styles.bestValue}>{formatWindow(snapshot.bestTime, snapshot.bestEndTime)}</Text>
               </View>
               <Text style={styles.bestScore}>{snapshot.bestScore}점</Text>
@@ -322,6 +374,26 @@ export default function App() {
             <Text style={styles.detail}>현재 위치나 서울 기본값으로 한 번 확인하면 마지막 성공 예보를 오프라인에서도 볼 수 있어요.</Text>
           </View>
         )}
+
+        {snapshot && freshness?.state !== "fresh" ? (
+          <View accessibilityRole="alert" style={[styles.freshnessBanner, freshness?.state === "stale" ? styles.freshnessBannerStale : null]}>
+            <View style={styles.freshnessCopy}>
+              <Text style={styles.freshnessTitle}>
+                {freshness?.state === "stale" ? "저장된 예보가 오래됐어요" : "새 예보를 확인할 때가 됐어요"}
+              </Text>
+              <Text style={styles.freshnessDetail}>위치를 다시 확인하기 전까지는 저장된 결과를 참고용으로만 보여드려요.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => void useCurrentLocation()}
+              style={({ pressed }) => [styles.freshnessAction, pressed && !busy ? styles.actionPressed : null, busy ? styles.actionDisabled : null]}
+            >
+              <Text style={styles.freshnessActionText}>새 예보 확인</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         <View style={styles.card}>
           <View style={styles.locationTop}>
@@ -353,10 +425,16 @@ export default function App() {
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.timeline}>
                 {snapshot.slots.slice(0, 12).map((slot, index) => (
-                  <View key={slot.time} style={[styles.timelineItem, index === 0 ? styles.timelineItemCurrent : null]}>
-                    <Text style={styles.timelineTime}>{index === 0 ? "지금" : formatClock(slot.time)}</Text>
+                  <View
+                    key={slot.time}
+                    accessible
+                    accessibilityLabel={`${formatClock(slot.time)}, ${slot.score}점, 체감 ${Math.round(slot.apparentTemperature)}도, ${slot.isDay === false ? "밤" : slot.isDay === true ? "낮" : "시간대 미수신"}, ${slot.precipitationProbability === null ? `강수량 ${slot.precipitation.toFixed(1)}밀리미터` : `비 올 확률 ${Math.round(slot.precipitationProbability)}퍼센트`}`}
+                    style={[styles.timelineItem, index === 0 ? styles.timelineItemCurrent : null]}
+                  >
+                    <Text style={styles.timelineTime}>{formatClock(slot.time)}</Text>
                     <Text style={styles.timelineScore}>{slot.score}</Text>
                     <Text style={styles.timelineTemp}>{Math.round(slot.apparentTemperature)}°</Text>
+                    <Text style={styles.timelineDaylight}>{slot.isDay === false ? "밤" : slot.isDay === true ? "낮" : "시간 확인"}</Text>
                     <Text style={styles.timelineRain}>{slot.precipitationProbability === null ? `${slot.precipitation.toFixed(1)}mm` : `비 ${Math.round(slot.precipitationProbability)}%`}</Text>
                   </View>
                 ))}
@@ -373,16 +451,21 @@ export default function App() {
                 <Metric label="체감" value={`${Math.round(snapshot.metrics.apparentTemperature)}°`} styles={styles} />
                 <Metric label="비" value={snapshot.metrics.precipitationProbability === null ? `${snapshot.metrics.precipitation.toFixed(1)}mm` : `${Math.round(snapshot.metrics.precipitationProbability)}%`} styles={styles} />
                 <Metric label="바람" value={`${snapshot.metrics.windSpeed.toFixed(1)}m/s`} styles={styles} />
+                <Metric label="돌풍" value={formatOptional(snapshot.metrics.windGust, "m/s", 1)} styles={styles} />
                 <Metric label="자외선" value={snapshot.metrics.uvIndex.toFixed(1)} styles={styles} />
                 <Metric label="습도" value={formatNullable(snapshot.metrics.relativeHumidity, "%")} styles={styles} />
                 <Metric label="초미세먼지" value={formatNullable(snapshot.metrics.pm25, "㎍/㎥", 1)} styles={styles} />
                 <Metric label="미세먼지" value={formatNullable(snapshot.metrics.pm10, "㎍/㎥", 1)} styles={styles} />
+                <Metric label="시간대" value={snapshot.metrics.isDay === false ? "밤" : snapshot.metrics.isDay === true ? "낮" : "미수신"} styles={styles} />
               </View>
               <Text style={styles.caption}>체감온도·강수·바람·자외선·습도·대기질을 선택한 활동 기준으로 함께 계산해요.</Text>
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>나가기 전 준비</Text>
+              <View style={styles.cardHeadingRow}>
+                <Text style={styles.cardTitle}>나가기 전 준비</Text>
+                <Text style={styles.cardMeta}>{formatWindow(snapshot.bestTime, snapshot.bestEndTime)} 기준</Text>
+              </View>
               {preparationTips.map((tip, index) => (
                 <View key={tip} style={styles.tipRow}>
                   <Text style={styles.tipNumber}>{index + 1}</Text>
@@ -427,6 +510,7 @@ function createStyles(palette: typeof lightPalette) {
     activityText: { color: palette.textMuted, fontSize: 14, fontWeight: "800" },
     activityTextSelected: { color: palette.accentDark, fontSize: 14, fontWeight: "900" },
     eyebrow: { color: palette.textMuted, fontSize: 12, fontWeight: "700" },
+    warningText: { color: palette.accentDark, fontWeight: "900" },
     locationState: { marginTop: 4, color: palette.textMuted, fontSize: 13, fontWeight: "700" },
     statusDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: palette.inactive },
     statusDotOn: { backgroundColor: palette.accent },
@@ -434,16 +518,24 @@ function createStyles(palette: typeof lightPalette) {
     heroTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
     heroCopy: { flex: 1 },
     judgment: { marginTop: 7, color: palette.text, fontSize: 25, lineHeight: 32, fontWeight: "900", letterSpacing: -0.8 },
-    scoreBadge: { width: 68, height: 68, flexDirection: "row", alignItems: "baseline", justifyContent: "center", paddingTop: 13, borderRadius: 22, backgroundColor: palette.surfaceAccent },
+    scoreBadge: { minWidth: 68, minHeight: 68, flexDirection: "row", alignItems: "baseline", justifyContent: "center", padding: 13, borderRadius: 22, backgroundColor: palette.surfaceAccent },
     scoreValue: { color: palette.accentDark, fontSize: 28, fontWeight: "900" },
     scoreUnit: { color: palette.accentDark, fontSize: 12, fontWeight: "800" },
     detail: { color: palette.textMuted, fontSize: 14, lineHeight: 22 },
+    dataWarning: { color: palette.accentDark, fontSize: 12, lineHeight: 18, fontWeight: "800" },
     bestWindow: { minHeight: 64, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 14, backgroundColor: palette.surfaceAccentSoft, borderRadius: 16 },
     bestLabel: { color: palette.textMuted, fontSize: 12, fontWeight: "700" },
     bestValue: { marginTop: 4, color: palette.accentDark, fontSize: 16, fontWeight: "900" },
     bestScore: { color: palette.accentDark, fontSize: 16, fontWeight: "900" },
     emptyCard: { gap: 8, padding: 20, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 24 },
     emptyTitle: { color: palette.text, fontSize: 20, fontWeight: "900" },
+    freshnessBanner: { minHeight: 84, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderWidth: 1, borderColor: palette.borderAccent, borderRadius: 20, backgroundColor: palette.surfaceAccentSoft },
+    freshnessBannerStale: { borderColor: palette.accent, backgroundColor: palette.surfaceAccent },
+    freshnessCopy: { flex: 1 },
+    freshnessTitle: { color: palette.text, fontSize: 14, fontWeight: "900" },
+    freshnessDetail: { marginTop: 4, color: palette.textMuted, fontSize: 11, lineHeight: 16 },
+    freshnessAction: { minHeight: 48, justifyContent: "center", paddingHorizontal: 13, borderRadius: 15, backgroundColor: isLightPalette(palette) ? palette.accentDark : palette.accent },
+    freshnessActionText: { color: isLightPalette(palette) ? "#ffffff" : "#102526", fontSize: 12, fontWeight: "900" },
     card: { gap: 14, padding: 18, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 24 },
     cardTitle: { color: palette.text, fontSize: 18, fontWeight: "900" },
     cardHeadingRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
@@ -465,11 +557,12 @@ function createStyles(palette: typeof lightPalette) {
     settingsButton: { minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: 15, backgroundColor: palette.surfaceAccentSoft },
     settingsButtonText: { color: palette.accentDark, fontSize: 13, fontWeight: "900", textDecorationLine: "underline" },
     timeline: { gap: 8, paddingRight: 4 },
-    timelineItem: { width: 82, minHeight: 112, justifyContent: "center", alignItems: "center", gap: 5, borderRadius: 17, backgroundColor: palette.surfaceMuted },
+    timelineItem: { minWidth: 82, minHeight: 128, justifyContent: "center", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 17, backgroundColor: palette.surfaceMuted },
     timelineItemCurrent: { borderWidth: 1, borderColor: palette.accent, backgroundColor: palette.surfaceAccent },
     timelineTime: { color: palette.textMuted, fontSize: 11, fontWeight: "800" },
     timelineScore: { color: palette.accentDark, fontSize: 24, fontWeight: "900" },
     timelineTemp: { color: palette.text, fontSize: 13, fontWeight: "800" },
+    timelineDaylight: { color: palette.textMuted, fontSize: 10, fontWeight: "800" },
     timelineRain: { color: palette.textFaint, fontSize: 10, fontWeight: "700" },
     tipRow: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12 },
     tipNumber: { width: 28, height: 28, lineHeight: 28, overflow: "hidden", borderRadius: 14, color: palette.accentDark, backgroundColor: palette.surfaceAccent, fontSize: 12, fontWeight: "900", textAlign: "center" },

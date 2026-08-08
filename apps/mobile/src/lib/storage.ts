@@ -28,6 +28,14 @@ function isNullableNumber(value: unknown): value is number | null {
   return value === null || isFiniteNumber(value);
 }
 
+function isOptionalNullableNumber(value: unknown): value is number | null | undefined {
+  return value === undefined || isNullableNumber(value);
+}
+
+function isOptionalNullableBoolean(value: unknown): value is boolean | null | undefined {
+  return value === undefined || value === null || typeof value === "boolean";
+}
+
 function isMetrics(value: unknown): value is ForecastMetrics {
   if (!value || typeof value !== "object") return false;
   const metrics = value as Partial<ForecastMetrics>;
@@ -39,7 +47,11 @@ function isMetrics(value: unknown): value is ForecastMetrics {
     && isFiniteNumber(metrics.uvIndex)
     && isNullableNumber(metrics.relativeHumidity)
     && isNullableNumber(metrics.pm25)
-    && isNullableNumber(metrics.pm10);
+    && isNullableNumber(metrics.pm10)
+    && isOptionalNullableNumber(metrics.windGust)
+    && isOptionalNullableNumber(metrics.weatherCode)
+    && isOptionalNullableNumber(metrics.snowfall)
+    && isOptionalNullableBoolean(metrics.isDay);
 }
 
 function isForecastSlot(value: unknown): value is ForecastSlot {
@@ -93,12 +105,23 @@ function isLegacySnapshot(value: unknown): value is LegacyForecastSnapshot {
     && isFiniteNumber(metrics?.uvIndex);
 }
 
+function nextHour(value: string) {
+  const date = new Date(`${value.slice(0, 13)}:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  date.setUTCHours(date.getUTCHours() + 1);
+  return date.toISOString().slice(0, 16);
+}
+
 export function migrateLegacySnapshot(legacy: LegacyForecastSnapshot): ForecastSnapshot {
   const metrics: ForecastMetrics = {
     ...legacy.metrics,
     relativeHumidity: null,
     pm25: null,
-    pm10: null
+    pm10: null,
+    windGust: null,
+    weatherCode: null,
+    snowfall: null,
+    isDay: null
   };
   const scored = scoreActivityConditions(metrics, "walk");
   const slot: ForecastSlot = { time: legacy.forecastTime, ...metrics, ...scored };
@@ -107,13 +130,13 @@ export function migrateLegacySnapshot(legacy: LegacyForecastSnapshot): ForecastS
     activity: "walk",
     locationName: legacy.locationName,
     generatedAt: legacy.generatedAt,
-    timezone: "UTC",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     forecastTime: legacy.forecastTime,
     score: scored.score,
     judgment: scored.judgment,
     detail: scored.detail,
-    bestTime: legacy.forecastTime,
-    bestEndTime: legacy.forecastTime,
+    bestTime: legacy.bestTime,
+    bestEndTime: nextHour(legacy.bestTime),
     bestScore: scored.score,
     metrics,
     slots: [slot]

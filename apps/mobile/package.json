@@ -1,6 +1,6 @@
 {
   "name": "outbom-mobile",
-  "version": "0.26.0",
+  "version": "0.26.1",
   "private": true,
   "main": "index.ts",
   "packageManager": "pnpm@10.17.1",

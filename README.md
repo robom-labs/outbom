@@ -12,7 +12,7 @@ API·기존 PWA 호환 주소: https://outbom.robom.kr
 
 현재 웹 버전: **v0.25.6** (`public/sw.js`의 `outbom-v0.25.6`과 일치)
 
-현재 네이티브 버전: **v0.26.0** (`apps/mobile`의 Android/iOS 앱)
+현재 네이티브 버전: **v0.26.1** (`apps/mobile`의 Android/iOS 앱)
 
 ## 패밀리 셸과 설치
 

@@ -7,10 +7,14 @@ export type ForecastMetrics = {
   precipitation: number;
   precipitationProbability: number | null;
   windSpeed: number;
+  windGust?: number | null;
   uvIndex: number;
   relativeHumidity: number | null;
   pm25: number | null;
   pm10: number | null;
+  weatherCode?: number | null;
+  snowfall?: number | null;
+  isDay?: boolean | null;
 };
 
 export type ForecastSlot = ForecastMetrics & {
@@ -46,8 +50,12 @@ export type ForecastApiResponse = {
     precipitation?: (number | null)[];
     precipitation_probability?: (number | null)[];
     wind_speed_10m?: (number | null)[];
+    wind_gusts_10m?: (number | null)[];
     uv_index?: (number | null)[];
     relative_humidity_2m?: (number | null)[];
+    weather_code?: (number | null)[];
+    snowfall?: (number | null)[];
+    is_day?: (number | null)[];
   };
 };
 
@@ -64,6 +72,8 @@ type ScoreResult = Pick<ForecastSlot, "score" | "judgment" | "detail">;
 
 const DEFAULT_FORECAST_API = "https://api.open-meteo.com/v1/forecast";
 const DEFAULT_AIR_QUALITY_API = "https://air-quality-api.open-meteo.com/v1/air-quality";
+const RECOMMENDATION_MIN_EACH = 55;
+const RECOMMENDATION_MIN_AVERAGE = 62;
 
 function clamp(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -131,6 +141,15 @@ function judgmentFor(score: number, activity: ActivityKey) {
 }
 
 function detailFor(metrics: ForecastMetrics, activity: ActivityKey) {
+  if ((metrics.weatherCode ?? 0) >= 95) {
+    return "낙뢰 가능성이 있어요. 야외활동을 미루고 실내로 이동하세요.";
+  }
+  if ((metrics.windGust ?? 0) >= 14) {
+    return "순간 돌풍이 강해요. 낙하물과 균형 상실 위험이 있어 야외활동을 미루는 편이 좋아요.";
+  }
+  if ((metrics.snowfall ?? 0) > 0 && metrics.temperature <= 0) {
+    return "눈과 결빙 가능성이 있어요. 미끄러운 노면에 대비하고 경로를 다시 확인하세요.";
+  }
   if ((metrics.pm25 ?? 0) > 75 || (metrics.pm10 ?? 0) > 150) {
     return "미세먼지가 나빠요. 야외활동 시간을 줄이고 공기 상태를 다시 확인하세요.";
   }
@@ -173,6 +192,12 @@ export function scoreActivityConditions(metrics: ForecastMetrics, activity: Acti
   else if (metrics.apparentTemperature <= -5) score = Math.min(score, 55);
   if ((metrics.pm25 ?? 0) > 75 || (metrics.pm10 ?? 0) > 150) score = Math.min(score, 30);
   if (metrics.windSpeed >= profile.windCap.speed) score = Math.min(score, profile.windCap.score);
+  if ((metrics.windGust ?? 0) >= 14) score = Math.min(score, 30);
+  if ((metrics.weatherCode ?? 0) >= 95) score = Math.min(score, 15);
+  if (activity === "bike" && (metrics.precipitation >= 0.5 || (metrics.precipitationProbability ?? 0) >= 70)) {
+    score = Math.min(score, 35);
+  }
+  if (activity === "hike" && (metrics.snowfall ?? 0) > 0 && metrics.temperature <= 0) score = Math.min(score, 30);
   if (metrics.uvIndex >= 11) score = Math.min(score, 50);
 
   return { score, judgment: judgmentFor(score, activity), detail: detailFor(metrics, activity) };
@@ -234,10 +259,14 @@ function readSlot(
     precipitation,
     precipitationProbability: finiteNumber(hourly?.precipitation_probability?.[index]),
     windSpeed,
+    windGust: finiteNumber(hourly?.wind_gusts_10m?.[index]),
     uvIndex,
     relativeHumidity: finiteNumber(hourly?.relative_humidity_2m?.[index]),
     pm25: air?.pm25 ?? null,
-    pm10: air?.pm10 ?? null
+    pm10: air?.pm10 ?? null,
+    weatherCode: finiteNumber(hourly?.weather_code?.[index]),
+    snowfall: finiteNumber(hourly?.snowfall?.[index]),
+    isDay: finiteNumber(hourly?.is_day?.[index]) === null ? null : hourly?.is_day?.[index] === 1
   };
   return { time, ...metrics, ...scoreActivityConditions(metrics, activity) };
 }
@@ -249,23 +278,73 @@ function shiftLocalHour(value: string, hours: number) {
   return date.toISOString().slice(0, 16);
 }
 
-function bestWindow(slots: ForecastSlot[]) {
+function areConsecutiveHours(current: string, next: string) {
+  return shiftLocalHour(current, 1) === next.slice(0, 16);
+}
+
+export function isUnsafeOutdoorSlot(slot: ForecastMetrics, activity: ActivityKey) {
+  if ((slot.weatherCode ?? 0) >= 95) return true;
+  if ((slot.windGust ?? 0) >= 14) return true;
+  if (slot.apparentTemperature >= 38) return true;
+  if ((slot.pm25 ?? 0) >= 76) return true;
+  if ((slot.pm10 ?? 0) > 150) return true;
+  if (activity === "bike" && (slot.precipitation >= 0.5 || (slot.precipitationProbability ?? 0) >= 70)) return true;
+  if (activity === "hike" && (slot.snowfall ?? 0) > 0 && slot.temperature <= 0) return true;
+  return false;
+}
+
+function isRecommendedWindow(slot: ForecastSlot, next: ForecastSlot, activity: ActivityKey) {
+  const startHour = Number(slot.time.slice(11, 13));
+  const earliestHour = activity === "hike" ? 4 : 6;
+  const latestHour = activity === "hike" ? 18 : 22;
+  const average = (slot.score + next.score) / 2;
+  const rainy = slot.precipitation >= 0.2
+    || next.precipitation >= 0.2
+    || (slot.precipitationProbability ?? 0) >= 60
+    || (next.precipitationProbability ?? 0) >= 60;
+  return Number.isFinite(startHour)
+    && areConsecutiveHours(slot.time, next.time)
+    && startHour >= earliestHour
+    && startHour <= latestHour
+    && !rainy
+    && !isUnsafeOutdoorSlot(slot, activity)
+    && !isUnsafeOutdoorSlot(next, activity)
+    && slot.score >= RECOMMENDATION_MIN_EACH
+    && next.score >= RECOMMENDATION_MIN_EACH
+    && average >= RECOMMENDATION_MIN_AVERAGE;
+}
+
+function bestWindow(slots: ForecastSlot[], activity: ActivityKey) {
   if (slots.length === 1) {
-    return { start: slots[0].time, end: shiftLocalHour(slots[0].time, 1), score: slots[0].score };
+    return {
+      start: slots[0].time,
+      end: shiftLocalHour(slots[0].time, 1),
+      score: slots[0].score,
+      recommended: false
+    };
   }
-  let bestIndex = 0;
-  let bestScore = (slots[0].score + slots[1].score) / 2;
-  for (let index = 1; index < slots.length - 1; index += 1) {
-    const score = (slots[index].score + slots[index + 1].score) / 2;
-    if (score > bestScore) {
-      bestIndex = index;
-      bestScore = score;
-    }
+  const windows = slots.slice(0, -1).map((slot, index) => {
+    const next = slots[index + 1];
+    const score = (slot.score + next.score) / 2;
+    const recommended = isRecommendedWindow(slot, next, activity);
+    return { index, score, recommended, consecutive: areConsecutiveHours(slot.time, next.time) };
+  }).filter((window) => window.consecutive);
+  if (windows.length === 0) {
+    return {
+      start: slots[0].time,
+      end: shiftLocalHour(slots[0].time, 1),
+      score: slots[0].score,
+      recommended: false
+    };
   }
+  const recommended = windows.filter((window) => window.recommended);
+  const pool = recommended.length > 0 ? recommended : windows;
+  const best = pool.reduce((current, candidate) => candidate.score > current.score ? candidate : current);
   return {
-    start: slots[bestIndex].time,
-    end: shiftLocalHour(slots[bestIndex + 1].time, 1),
-    score: clamp(bestScore)
+    start: slots[best.index].time,
+    end: shiftLocalHour(slots[best.index + 1].time, 1),
+    score: clamp(best.score),
+    recommended: best.recommended
   };
 }
 
@@ -278,7 +357,7 @@ function assembleSnapshot(options: {
 }): ForecastSnapshot {
   if (options.slots.length === 0) throw new Error("사용 가능한 예보가 없습니다.");
   const current = options.slots[0];
-  const best = bestWindow(options.slots);
+  const best = bestWindow(options.slots, options.activity);
   return {
     schemaVersion: 2,
     activity: options.activity,
@@ -298,10 +377,14 @@ function assembleSnapshot(options: {
       precipitation: current.precipitation,
       precipitationProbability: current.precipitationProbability,
       windSpeed: current.windSpeed,
+      windGust: current.windGust ?? null,
       uvIndex: current.uvIndex,
       relativeHumidity: current.relativeHumidity,
       pm25: current.pm25,
-      pm10: current.pm10
+      pm10: current.pm10,
+      weatherCode: current.weatherCode ?? null,
+      snowfall: current.snowfall ?? null,
+      isDay: current.isDay ?? null
     },
     slots: options.slots
   };
@@ -348,19 +431,47 @@ export function rescoreForecastSnapshot(snapshot: ForecastSnapshot, activity: Ac
 }
 
 export function buildPreparationTips(snapshot: ForecastSnapshot) {
-  const metrics = snapshot.metrics;
-  const tips: string[] = [];
+  const startIndex = snapshot.slots.findIndex((slot) => slot.time === snapshot.bestTime);
+  const recommendationSlots = startIndex >= 0 ? snapshot.slots.slice(startIndex, startIndex + 2) : [snapshot.slots[0]];
+  const daylight = recommendationSlots.some((item) => item.isDay === false)
+    ? false
+    : recommendationSlots.some((item) => item.isDay === true)
+      ? true
+      : null;
+  const minimumTemperature = Math.min(...recommendationSlots.map((slot) => slot.temperature));
+  const metrics = recommendationSlots.reduce<ForecastMetrics>((result, slot) => ({
+    temperature: slot.temperature > result.temperature ? slot.temperature : result.temperature,
+    apparentTemperature: slot.apparentTemperature > result.apparentTemperature ? slot.apparentTemperature : result.apparentTemperature,
+    precipitation: Math.max(result.precipitation, slot.precipitation),
+    precipitationProbability: Math.max(result.precipitationProbability ?? 0, slot.precipitationProbability ?? 0),
+    windSpeed: Math.max(result.windSpeed, slot.windSpeed),
+    windGust: Math.max(result.windGust ?? 0, slot.windGust ?? 0),
+    uvIndex: Math.max(result.uvIndex, slot.uvIndex),
+    relativeHumidity: Math.max(result.relativeHumidity ?? 0, slot.relativeHumidity ?? 0),
+    pm25: Math.max(result.pm25 ?? 0, slot.pm25 ?? 0),
+    pm10: Math.max(result.pm10 ?? 0, slot.pm10 ?? 0),
+    weatherCode: Math.max(result.weatherCode ?? 0, slot.weatherCode ?? 0),
+    snowfall: Math.max(result.snowfall ?? 0, slot.snowfall ?? 0),
+    isDay: daylight
+  }), recommendationSlots[0]);
+  const priorityTips: string[] = [];
+  const optionalTips: string[] = [];
+  if ((metrics.weatherCode ?? 0) >= 95) priorityTips.push("낙뢰가 예상되면 출발하지 말고 실내에서 기다리세요.");
+  if ((metrics.windGust ?? 0) >= 14) priorityTips.push("강한 돌풍이 예상돼요. 나무·간판 주변을 피하고 출발을 다시 판단하세요.");
+  else if ((metrics.windGust ?? 0) >= 10) optionalTips.push("돌풍에 대비해 나무·간판 주변을 피하고 헐거운 장비를 고정하세요.");
+  if ((metrics.snowfall ?? 0) > 0 && minimumTemperature <= 0) priorityTips.push("눈과 결빙 가능성이 있어요. 미끄럼 방지 장비와 우회 경로를 준비하세요.");
+  if (metrics.isDay === false) priorityTips.push("야간 활동에는 밝은 조명과 반사 소품을 반드시 챙기세요.");
   if (metrics.precipitation >= 0.3 || (metrics.precipitationProbability ?? 0) >= 60) {
-    tips.push("방수 겉옷이나 우산을 챙기고 미끄러운 노면을 피하세요.");
+    optionalTips.push("방수 겉옷이나 우산을 챙기고 미끄러운 노면을 피하세요.");
   }
   if ((metrics.pm25 ?? 0) > 35 || (metrics.pm10 ?? 0) > 80) {
-    tips.push("대기질이 좋지 않으면 시간을 줄이고 큰길보다 안쪽 길을 선택하세요.");
+    optionalTips.push("대기질이 좋지 않으면 시간을 줄이고 큰길보다 안쪽 길을 선택하세요.");
   }
   if (metrics.apparentTemperature >= 26 || (metrics.relativeHumidity ?? 0) >= 80) {
-    tips.push("물 한 병을 챙기고 그늘에서 쉬는 간격을 미리 정하세요.");
+    optionalTips.push("물 한 병을 챙기고 그늘에서 쉬는 간격을 미리 정하세요.");
   }
-  if (metrics.uvIndex >= 5) tips.push("모자와 자외선 차단제를 챙기세요.");
-  if (metrics.windSpeed >= 8) tips.push("바람을 막는 얇은 겉옷과 안전한 경로를 준비하세요.");
+  if (metrics.uvIndex >= 5) optionalTips.push("모자와 자외선 차단제를 챙기세요.");
+  if (metrics.windSpeed >= 8) optionalTips.push("바람을 막는 얇은 겉옷과 안전한 경로를 준비하세요.");
 
   const activityTip: Record<ActivityKey, string> = {
     walk: "쿠션 좋은 신발을 신고 휴대폰 배터리를 확인하세요.",
@@ -369,8 +480,34 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
     hike: "하산 시간과 경로를 공유하고 물·보조배터리를 챙기세요.",
     bike: "헬멧을 쓰고 브레이크·타이어 공기압을 출발 전에 확인하세요."
   };
-  const riskTips = [...new Set(tips)].slice(0, 2);
+  const required = [...new Set(priorityTips)];
+  const optional = [...new Set(optionalTips)].filter((tip) => !required.includes(tip));
+  const riskTips = [...required, ...optional.slice(0, Math.max(0, 2 - required.length))];
   return [...new Set([...riskTips, activityTip[snapshot.activity]])];
+}
+
+export function getRecommendationState(snapshot: ForecastSnapshot) {
+  const index = snapshot.slots.findIndex((slot) => slot.time === snapshot.bestTime);
+  if (index < 0) return "limited" as const;
+  const slots = snapshot.slots.slice(index, index + 2);
+  return slots.length === 2 && isRecommendedWindow(slots[0], slots[1], snapshot.activity)
+    ? "recommended" as const
+    : "limited" as const;
+}
+
+export function getForecastFreshness(snapshot: ForecastSnapshot, now = new Date()) {
+  const generatedAt = new Date(snapshot.generatedAt).getTime();
+  const age = now.getTime() - generatedAt;
+  const currentHour = hourKey(now, snapshot.timezone);
+  const hasFutureSlot = snapshot.slots.some((slot) => slot.time.slice(0, 13) >= currentHour);
+  const sameForecastDate = snapshot.forecastTime.slice(0, 10) === currentHour.slice(0, 10);
+  if (!Number.isFinite(generatedAt) || age < -5 * 60 * 1000 || !hasFutureSlot || !sameForecastDate || age > 6 * 60 * 60 * 1000) {
+    return { state: "stale" as const, label: "오래된 저장 예보", ageHours: null };
+  }
+  const ageHours = Math.max(0, age / (60 * 60 * 1000));
+  if (ageHours > 3) return { state: "aging" as const, label: `${Math.floor(ageHours)}시간 전 저장`, ageHours };
+  if (ageHours >= 1) return { state: "fresh" as const, label: `${Math.floor(ageHours)}시간 전 저장`, ageHours };
+  return { state: "fresh" as const, label: "최근 저장", ageHours };
 }
 
 async function fetchJson<T>(url: URL, signal: AbortSignal) {
@@ -400,7 +537,7 @@ export async function fetchForecastSnapshot(options: {
   }
   forecastUrl.searchParams.set(
     "hourly",
-    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,wind_speed_10m,uv_index,relative_humidity_2m"
+    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,wind_speed_10m,wind_gusts_10m,uv_index,relative_humidity_2m,weather_code,snowfall,is_day"
   );
   forecastUrl.searchParams.set("wind_speed_unit", "ms");
   airQualityUrl.searchParams.set("hourly", "pm2_5,pm10");
