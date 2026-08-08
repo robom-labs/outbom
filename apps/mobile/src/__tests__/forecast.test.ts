@@ -32,6 +32,7 @@ function weatherResponse(overrides: Partial<ForecastApiResponse["hourly"]> = {})
       precipitation_probability: [10, 5, 0, 0],
       wind_speed_10m: [2, 1, 1, 1],
       wind_gusts_10m: [3, 2, 2, 2],
+      visibility: [20000, 20000, 20000, 20000],
       uv_index: [1, 1, 1, 1],
       relative_humidity_2m: [55, 53, 52, 50],
       weather_code: [1, 1, 1, 1],
@@ -42,11 +43,15 @@ function weatherResponse(overrides: Partial<ForecastApiResponse["hourly"]> = {})
   };
 }
 
-function airResponse(pm25 = [12, 13, 14, 15], pm10 = [24, 25, 26, 27]): AirQualityApiResponse {
+function airResponse(
+  pm25 = [12, 13, 14, 15],
+  pm10 = [24, 25, 26, 27],
+  times = ["2026-07-16T01:00", "2026-07-16T02:00", "2026-07-16T03:00", "2026-07-16T04:00"]
+): AirQualityApiResponse {
   return {
     timezone: "UTC",
     hourly: {
-      time: ["2026-07-16T01:00", "2026-07-16T02:00", "2026-07-16T03:00", "2026-07-16T04:00"],
+      time: times,
       pm2_5: pm25,
       pm10
     }
@@ -122,6 +127,26 @@ describe("native activity forecast", () => {
     expect(rain.judgment).toContain("미루는");
     expect(dust.score).toBeLessThanOrEqual(30);
     expect(dust.detail).toContain("미세먼지");
+  });
+
+  it("미세먼지 나쁨 단계에는 2시간 추천이 뜨지 않게 60점으로 제한한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00", "2026-07-16T09:00"]
+      }),
+      airResponse(
+        [36, 36, 36, 36],
+        [81, 81, 81, 81],
+        ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00", "2026-07-16T09:00"]
+      ),
+      "run",
+      "서울",
+      new Date("2026-07-16T06:30:00.000Z")
+    );
+
+    expect(snapshot.score).toBe(60);
+    expect(snapshot.detail).toContain("나쁨 수준");
+    expect(getRecommendationState(snapshot)).toBe("limited");
   });
 
   it("활동별 위험 기준을 달리 적용한다", () => {
@@ -233,6 +258,27 @@ describe("native activity forecast", () => {
     expect(scoreActivityConditions(metrics({ weatherCode: 82 }), "hike").detail).toContain("강한 비");
   });
 
+  it("가시거리 200m 미만은 모든 활동, 1km 미만은 등산·자전거에서 차단한다", () => {
+    expect(isUnsafeOutdoorSlot(metrics({ visibility: 199 }), "walk")).toBe(true);
+    expect(scoreActivityConditions(metrics({ visibility: 199 }), "walk").score).toBeLessThanOrEqual(40);
+    expect(isUnsafeOutdoorSlot(metrics({ visibility: 999 }), "hike")).toBe(true);
+    expect(isUnsafeOutdoorSlot(metrics({ visibility: 999 }), "bike")).toBe(true);
+    expect(isUnsafeOutdoorSlot(metrics({ visibility: 1_000 }), "hike")).toBe(false);
+  });
+
+  it("자외선 지수 3부터 보호 준비를 안내한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({ uv_index: [3, 3, 3, 3] }),
+      airResponse(),
+      "walk",
+      "서울",
+      new Date("2026-07-16T01:30:00.000Z")
+    );
+
+    expect(snapshot.detail).toContain("자외선 차단");
+    expect(buildPreparationTips(snapshot).some((tip) => tip.includes("선글라스") && tip.includes("차단제"))).toBe(true);
+  });
+
   it("등산 추천은 일몰 한 시간 전까지 끝나는 구간만 허용한다", () => {
     const snapshot = buildForecastSnapshot(
       {
@@ -277,6 +323,7 @@ describe("native activity forecast", () => {
     const forecastUrl = new URL(urls.find((url) => !url.includes("air-quality")) as string);
     expect(forecastUrl.searchParams.get("daily")).toBe("sunrise,sunset");
     expect(forecastUrl.searchParams.get("hourly")).toContain("wind_gusts_10m");
+    expect(forecastUrl.searchParams.get("hourly")).toContain("visibility");
     expect(forecastUrl.searchParams.get("hourly")).toContain("weather_code");
     expect(forecastUrl.searchParams.get("hourly")).toContain("snowfall");
     expect(forecastUrl.searchParams.get("hourly")).toContain("is_day");

@@ -53,6 +53,7 @@ function isMetrics(value: unknown): value is ForecastMetrics {
     && isNullableNumber(metrics.pm25)
     && isNullableNumber(metrics.pm10)
     && isOptionalNullableNumber(metrics.windGust)
+    && isOptionalNullableNumber(metrics.visibility)
     && isOptionalNullableNumber(metrics.weatherCode)
     && isOptionalNullableNumber(metrics.snowfall)
     && isOptionalNullableBoolean(metrics.isDay);
@@ -127,6 +128,7 @@ export function migrateLegacySnapshot(legacy: LegacyForecastSnapshot): ForecastS
     pm25: null,
     pm10: null,
     windGust: null,
+    visibility: null,
     weatherCode: null,
     snowfall: null,
     isDay: null

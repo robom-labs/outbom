@@ -37,6 +37,7 @@ type AppStyles = ReturnType<typeof createStyles>;
 const SEOUL = { latitude: 37.5665, longitude: 126.978, locationName: "서울 기본값" };
 const SUPPORT_URL = process.env.EXPO_PUBLIC_SUPPORT_URL ?? "https://robom.kr/support";
 const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL ?? "https://robom.kr/privacy/outbom";
+const OPEN_METEO_URL = "https://open-meteo.com/";
 const locationLabels: Record<LocationState, string> = {
   idle: "요청 전",
   requesting: "권한 확인 중",
@@ -103,6 +104,12 @@ function formatNullable(value: number | null, suffix: string, digits = 0) {
 
 function formatOptional(value: number | null | undefined, suffix: string, digits = 0) {
   return value === null || value === undefined ? "미수신" : `${value.toFixed(digits)}${suffix}`;
+}
+
+function formatVisibility(value: number | null | undefined) {
+  if (value === null || value === undefined) return "미수신";
+  if (value < 1_000) return `${Math.round(value)}m`;
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)}km`;
 }
 
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number) {
@@ -422,7 +429,7 @@ export default function App() {
             </Pressable>
           ) : null}
           {busy ? <ActivityIndicator color={palette.accent} /> : null}
-          <Text style={styles.caption}>위치는 이 버튼을 누를 때만 사용하며, 좌표는 저장하지 않아요.</Text>
+          <Text style={styles.caption}>위치는 이 버튼을 누를 때 예보 제공처로만 전송하며, 좌표는 앱에 저장하지 않아요.</Text>
         </View>
 
         {snapshot ? (
@@ -461,13 +468,14 @@ export default function App() {
                 <Metric label="비" value={snapshot.metrics.precipitationProbability === null ? `${snapshot.metrics.precipitation.toFixed(1)}mm` : `${Math.round(snapshot.metrics.precipitationProbability)}%`} styles={styles} />
                 <Metric label="바람" value={`${snapshot.metrics.windSpeed.toFixed(1)}m/s`} styles={styles} />
                 <Metric label="돌풍" value={formatOptional(snapshot.metrics.windGust, "m/s", 1)} styles={styles} />
+                <Metric label="가시거리" value={formatVisibility(snapshot.metrics.visibility)} styles={styles} />
                 <Metric label="자외선" value={snapshot.metrics.uvIndex.toFixed(1)} styles={styles} />
                 <Metric label="습도" value={formatNullable(snapshot.metrics.relativeHumidity, "%")} styles={styles} />
                 <Metric label="초미세먼지" value={formatNullable(snapshot.metrics.pm25, "㎍/㎥", 1)} styles={styles} />
                 <Metric label="미세먼지" value={formatNullable(snapshot.metrics.pm10, "㎍/㎥", 1)} styles={styles} />
                 <Metric label="시간대" value={snapshot.metrics.isDay === false ? "밤" : snapshot.metrics.isDay === true ? "낮" : "미수신"} styles={styles} />
               </View>
-              <Text style={styles.caption}>체감온도·강수·바람·자외선·습도·대기질을 선택한 활동 기준으로 함께 계산해요.</Text>
+              <Text style={styles.caption}>체감온도·강수·바람·가시거리·자외선·습도·대기질을 선택한 활동 기준으로 함께 계산해요.</Text>
             </View>
 
             <View style={styles.card}>
@@ -490,7 +498,11 @@ export default function App() {
         </View>
 
         <Text style={styles.footer}>권한 거부·오프라인에서도 저장된 판단은 계속 열립니다. 백그라운드 위치, 광고, 추적 기능은 사용하지 않습니다.</Text>
+        <Text style={styles.footer}>날씨·대기질 원자료를 야외봄이 활동별로 재계산한 참고 정보예요. 실제 현장 안내와 안전 판단을 우선하세요.</Text>
         <View style={styles.footerLinks}>
+          <Pressable accessibilityLabel="날씨와 대기질 원자료 Open-Meteo 열기" accessibilityRole="link" onPress={() => void Linking.openURL(OPEN_METEO_URL).catch(() => undefined)} style={styles.footerLinkButton}>
+            <Text style={styles.footerLink}>원자료 Open-Meteo</Text>
+          </Pressable>
           <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(SUPPORT_URL).catch(() => undefined)} style={styles.footerLinkButton}>
             <Text style={styles.footerLink}>지원</Text>
           </Pressable>
@@ -581,7 +593,7 @@ function createStyles(palette: typeof lightPalette) {
     feedback: { minHeight: 52, justifyContent: "center", paddingHorizontal: 15, backgroundColor: palette.surfaceAccent, borderRadius: 17 },
     feedbackText: { color: palette.accentDark, fontSize: 13, lineHeight: 19, fontWeight: "700" },
     footer: { paddingHorizontal: 5, color: palette.textFaint, fontSize: 11, lineHeight: 18, textAlign: "center" },
-    footerLinks: { flexDirection: "row", justifyContent: "center", gap: 8 },
+    footerLinks: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 },
     footerLinkButton: { minHeight: 48, justifyContent: "center", paddingHorizontal: 14 },
     footerLink: { color: palette.accentDark, fontSize: 13, fontWeight: "800", textDecorationLine: "underline" }
   });

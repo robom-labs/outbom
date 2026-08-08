@@ -37,6 +37,7 @@ const response: ForecastApiResponse = {
     precipitation: [0, 0],
     precipitation_probability: [10, 5],
     wind_speed_10m: [2, 1],
+    visibility: [12000, 11000],
     uv_index: [1, 1],
     relative_humidity_2m: [55, 53]
   }
@@ -51,6 +52,7 @@ describe("native local storage", () => {
     expect(await saveForecastSnapshot(snapshot)).toBe(true);
     await expect(loadForecastSnapshot()).resolves.toEqual(snapshot);
     expect(snapshot.sunset).toBe("2026-07-16T19:30");
+    expect(snapshot.metrics.visibility).toBe(12000);
     expect(mockStorage.values.get(LAST_FORECAST_KEY)).not.toContain("latitude");
   });
 

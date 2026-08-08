@@ -8,6 +8,7 @@ export type ForecastMetrics = {
   precipitationProbability: number | null;
   windSpeed: number;
   windGust?: number | null;
+  visibility?: number | null;
   uvIndex: number;
   relativeHumidity: number | null;
   pm25: number | null;
@@ -55,6 +56,7 @@ export type ForecastApiResponse = {
     precipitation_probability?: (number | null)[];
     wind_speed_10m?: (number | null)[];
     wind_gusts_10m?: (number | null)[];
+    visibility?: (number | null)[];
     uv_index?: (number | null)[];
     relative_humidity_2m?: (number | null)[];
     weather_code?: (number | null)[];
@@ -96,6 +98,12 @@ function hasWeatherCode(metrics: ForecastMetrics, codes: Set<number>) {
 
 function hasSnowRisk(metrics: ForecastMetrics) {
   return (metrics.snowfall ?? 0) > 0 || hasWeatherCode(metrics, SNOW_CODES);
+}
+
+function hasVisibilityBelow(metrics: ForecastMetrics, metres: number) {
+  return metrics.visibility !== null
+    && metrics.visibility !== undefined
+    && metrics.visibility < metres;
 }
 
 function clamp(value: number) {
@@ -173,8 +181,11 @@ function detailFor(metrics: ForecastMetrics, activity: ActivityKey) {
   if ((metrics.windGust ?? 0) >= 14) {
     return "순간 돌풍이 강해요. 낙하물과 균형 상실 위험이 있어 야외활동을 미루는 편이 좋아요.";
   }
-  if ((activity === "hike" || activity === "bike") && hasWeatherCode(metrics, FOG_CODES)) {
-    return "안개로 시야와 길 찾기가 어려울 수 있어요. 등산·자전거는 미루는 편이 좋아요.";
+  if (hasVisibilityBelow(metrics, 200)) {
+    return "짙은 안개로 바로 앞 시야도 제한될 수 있어요. 이동을 미루고 가시거리를 다시 확인하세요.";
+  }
+  if ((activity === "hike" || activity === "bike") && (hasWeatherCode(metrics, FOG_CODES) || hasVisibilityBelow(metrics, 1_000))) {
+    return "가시거리 1km 미만의 안개로 길 찾기가 어려울 수 있어요. 등산·자전거는 미루는 편이 좋아요.";
   }
   if ((activity === "hike" || activity === "bike") && hasWeatherCode(metrics, SEVERE_RAIN_CODES)) {
     return "강한 비나 소나기로 노면과 시야가 위험할 수 있어요. 등산·자전거는 미루는 편이 좋아요.";
@@ -182,8 +193,11 @@ function detailFor(metrics: ForecastMetrics, activity: ActivityKey) {
   if (hasSnowRisk(metrics)) {
     return "눈과 결빙 가능성이 있어요. 미끄러운 노면에 대비하고 경로를 다시 확인하세요.";
   }
-  if ((metrics.pm25 ?? 0) > 75 || (metrics.pm10 ?? 0) > 150) {
-    return "미세먼지가 나빠요. 야외활동 시간을 줄이고 공기 상태를 다시 확인하세요.";
+  if ((metrics.pm25 ?? 0) >= 76 || (metrics.pm10 ?? 0) >= 151) {
+    return "미세먼지가 매우 나빠요. 야외활동을 미루고 공기 상태를 다시 확인하세요.";
+  }
+  if ((metrics.pm25 ?? 0) >= 36 || (metrics.pm10 ?? 0) >= 81) {
+    return "미세먼지가 나쁨 수준이에요. 2시간 활동은 미루고 짧고 낮은 강도로 조정하세요.";
   }
   if (metrics.precipitation >= 1 || (metrics.precipitationProbability ?? 0) >= 70) {
     return "비 가능성이 높아요. 미끄러운 노면과 젖은 장비에 대비하세요.";
@@ -196,7 +210,8 @@ function detailFor(metrics: ForecastMetrics, activity: ActivityKey) {
   }
   if (metrics.apparentTemperature <= 0) return "체감온도가 낮아요. 보온과 노면 상태를 확인하세요.";
   if (metrics.windSpeed >= ACTIVITIES[activity].windCap.speed) return "바람이 강해요. 방풍 준비와 이동 경로를 다시 확인하세요.";
-  if (metrics.uvIndex >= 7) return "자외선이 강해요. 모자와 자외선 차단제를 챙기세요.";
+  if (metrics.uvIndex >= 8) return "자외선이 매우 강해요. 한낮 활동을 줄이고 그늘·긴 옷·모자·선글라스·차단제를 준비하세요.";
+  if (metrics.uvIndex >= 3) return "자외선 차단이 필요한 수준이에요. 그늘·긴 옷·모자·선글라스·차단제를 준비하세요.";
   if ((metrics.relativeHumidity ?? 0) >= 80) return "습도가 높아요. 속도를 낮추고 수분을 자주 보충하세요.";
   return "체감온도·비·바람·자외선·대기질 기준으로 큰 부담이 적어요.";
 }
@@ -222,9 +237,12 @@ export function scoreActivityConditions(metrics: ForecastMetrics, activity: Acti
   else if (metrics.apparentTemperature >= profile.heatCaps.cautionAt) score = Math.min(score, profile.heatCaps.cautionCap);
   if (metrics.apparentTemperature <= -10) score = Math.min(score, 35);
   else if (metrics.apparentTemperature <= -5) score = Math.min(score, 55);
-  if ((metrics.pm25 ?? 0) > 75 || (metrics.pm10 ?? 0) > 150) score = Math.min(score, 30);
+  if ((metrics.pm25 ?? 0) >= 76 || (metrics.pm10 ?? 0) >= 151) score = Math.min(score, 30);
+  else if ((metrics.pm25 ?? 0) >= 36 || (metrics.pm10 ?? 0) >= 81) score = Math.min(score, 60);
   if (metrics.windSpeed >= profile.windCap.speed) score = Math.min(score, profile.windCap.score);
   if ((metrics.windGust ?? 0) >= 14) score = Math.min(score, 30);
+  if (hasVisibilityBelow(metrics, 200)) score = Math.min(score, 40);
+  else if ((activity === "hike" || activity === "bike") && hasVisibilityBelow(metrics, 1_000)) score = Math.min(score, 40);
   if ((metrics.weatherCode ?? 0) >= 95) score = Math.min(score, 15);
   if (hasWeatherCode(metrics, FREEZING_PRECIPITATION_CODES)) score = Math.min(score, 15);
   if (activity === "bike" && (metrics.precipitation >= 0.5 || (metrics.precipitationProbability ?? 0) >= 70)) {
@@ -308,6 +326,7 @@ function readSlot(
     precipitationProbability: finiteNumber(hourly?.precipitation_probability?.[index]),
     windSpeed,
     windGust: finiteNumber(hourly?.wind_gusts_10m?.[index]),
+    visibility: finiteNumber(hourly?.visibility?.[index]),
     uvIndex,
     relativeHumidity: finiteNumber(hourly?.relative_humidity_2m?.[index]),
     pm25: air?.pm25 ?? null,
@@ -345,12 +364,14 @@ export function isUnsafeOutdoorSlot(slot: ForecastMetrics, activity: ActivityKey
   if ((slot.weatherCode ?? 0) >= 95) return true;
   if (hasWeatherCode(slot, FREEZING_PRECIPITATION_CODES)) return true;
   if ((slot.windGust ?? 0) >= 14) return true;
+  if (hasVisibilityBelow(slot, 200)) return true;
   if (slot.apparentTemperature >= 38) return true;
   if ((slot.pm25 ?? 0) >= 76) return true;
   if ((slot.pm10 ?? 0) > 150) return true;
   if (activity === "bike" && (slot.precipitation >= 0.5 || (slot.precipitationProbability ?? 0) >= 70)) return true;
   if ((activity === "hike" || activity === "bike") && hasSnowRisk(slot)) return true;
   if ((activity === "hike" || activity === "bike") && hasWeatherCode(slot, FOG_CODES)) return true;
+  if ((activity === "hike" || activity === "bike") && hasVisibilityBelow(slot, 1_000)) return true;
   if ((activity === "hike" || activity === "bike") && hasWeatherCode(slot, SEVERE_RAIN_CODES)) return true;
   if (activity === "hike" && slot.isDay === false) return true;
   return false;
@@ -448,6 +469,7 @@ function assembleSnapshot(options: {
       precipitationProbability: current.precipitationProbability,
       windSpeed: current.windSpeed,
       windGust: current.windGust ?? null,
+      visibility: current.visibility ?? null,
       uvIndex: current.uvIndex,
       relativeHumidity: current.relativeHumidity,
       pm25: current.pm25,
@@ -516,6 +538,11 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
     precipitationProbability: Math.max(result.precipitationProbability ?? 0, slot.precipitationProbability ?? 0),
     windSpeed: Math.max(result.windSpeed, slot.windSpeed),
     windGust: Math.max(result.windGust ?? 0, slot.windGust ?? 0),
+    visibility: result.visibility === null || result.visibility === undefined
+      ? slot.visibility ?? null
+      : slot.visibility === null || slot.visibility === undefined
+        ? result.visibility
+        : Math.min(result.visibility, slot.visibility),
     uvIndex: Math.max(result.uvIndex, slot.uvIndex),
     relativeHumidity: Math.max(result.relativeHumidity ?? 0, slot.relativeHumidity ?? 0),
     pm25: Math.max(result.pm25 ?? 0, slot.pm25 ?? 0),
@@ -530,8 +557,9 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
   if (hasWeatherCode(metrics, FREEZING_PRECIPITATION_CODES)) priorityTips.push("어는 비나 이슬비가 예상돼요. 결빙 노면을 피하고 출발을 미루세요.");
   if ((metrics.windGust ?? 0) >= 14) priorityTips.push("강한 돌풍이 예상돼요. 나무·간판 주변을 피하고 출발을 다시 판단하세요.");
   else if ((metrics.windGust ?? 0) >= 10) optionalTips.push("돌풍에 대비해 나무·간판 주변을 피하고 헐거운 장비를 고정하세요.");
+  if (hasVisibilityBelow(metrics, 200)) priorityTips.push("가시거리가 200m 미만으로 짧아요. 이동을 미루고 안개가 걷힌 뒤 다시 확인하세요.");
+  else if ((snapshot.activity === "hike" || snapshot.activity === "bike") && (hasVisibilityBelow(metrics, 1_000) || hasWeatherCode(metrics, FOG_CODES))) priorityTips.push("안개로 가시거리가 짧아요. 등산·자전거 출발을 미루고 경로를 다시 확인하세요.");
   if (hasSnowRisk(metrics)) priorityTips.push("눈과 결빙 가능성이 있어요. 미끄럼 방지 장비와 우회 경로를 준비하세요.");
-  if ((snapshot.activity === "hike" || snapshot.activity === "bike") && hasWeatherCode(metrics, FOG_CODES)) priorityTips.push("안개로 시야가 짧아요. 등산·자전거는 미루고 경로를 다시 확인하세요.");
   if ((snapshot.activity === "hike" || snapshot.activity === "bike") && hasWeatherCode(metrics, SEVERE_RAIN_CODES)) priorityTips.push("강한 비나 소나기가 예상돼요. 등산·자전거 출발을 미루세요.");
   if (metrics.isDay === false) priorityTips.push("야간 활동에는 밝은 조명과 반사 소품을 반드시 챙기세요.");
   if (metrics.precipitation >= 0.3 || (metrics.precipitationProbability ?? 0) >= 60) {
@@ -543,7 +571,7 @@ export function buildPreparationTips(snapshot: ForecastSnapshot) {
   if (metrics.apparentTemperature >= 26 || (metrics.relativeHumidity ?? 0) >= 80) {
     optionalTips.push("물 한 병을 챙기고 그늘에서 쉬는 간격을 미리 정하세요.");
   }
-  if (metrics.uvIndex >= 5) optionalTips.push("모자와 자외선 차단제를 챙기세요.");
+  if (metrics.uvIndex >= 3) optionalTips.push("그늘을 우선하고 긴 옷·모자·선글라스·자외선 차단제를 챙기세요.");
   if (metrics.windSpeed >= 8) optionalTips.push("바람을 막는 얇은 겉옷과 안전한 경로를 준비하세요.");
 
   const activityTip: Record<ActivityKey, string> = {
@@ -612,7 +640,7 @@ export async function fetchForecastSnapshot(options: {
   }
   forecastUrl.searchParams.set(
     "hourly",
-    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,wind_speed_10m,wind_gusts_10m,uv_index,relative_humidity_2m,weather_code,snowfall,is_day"
+    "temperature_2m,apparent_temperature,precipitation,precipitation_probability,wind_speed_10m,wind_gusts_10m,visibility,uv_index,relative_humidity_2m,weather_code,snowfall,is_day"
   );
   forecastUrl.searchParams.set("daily", "sunrise,sunset");
   forecastUrl.searchParams.set("wind_speed_unit", "ms");

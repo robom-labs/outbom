@@ -12,7 +12,7 @@ API·기존 PWA 호환 주소: https://outbom.robom.kr
 
 현재 웹 버전: **v0.25.6** (`public/sw.js`의 `outbom-v0.25.6`과 일치)
 
-현재 네이티브 버전: **v0.26.1** (`apps/mobile`의 Android/iOS 앱)
+현재 네이티브 버전: **v0.26.3** (`apps/mobile`의 Android/iOS 앱)
 
 ## 패밀리 셸과 설치
 
@@ -46,6 +46,7 @@ pnpm typecheck
 
 - 날씨: Open-Meteo Forecast API (체감온도·강수·바람·자외선·낙뢰·돌풍·시정·적설 등)
 - 대기질: Open-Meteo Air Quality API (PM2.5/PM10)
+- Open-Meteo 공개 API는 평가·비상업용 기본값이다. 상업 출시 전에는 유료 라이선스 또는 자체 호스팅을 적용한 API 호환 프록시를 `EXPO_PUBLIC_FORECAST_API_URL`·`EXPO_PUBLIC_AIR_QUALITY_API_URL`에 연결하고, 비밀 API 키를 앱 번들에 넣지 않는다.
 - 위치 검색: Kakao Local API — `KAKAO_REST_API_KEY`가 없으면 검색이 비활성화되고(503) 화면에 안내가 표시됩니다. 텍스트 검색 폴백은 없습니다. (Nominatim은 좌표→동네명 역지오코딩에만 사용)
 - 장애 복원: 위치 좌표별로 최근 예보를 최대 5곳, 6시간 동안만 보관하며 실시간 요청 실패 시 같은 좌표의 저장 데이터와 경과 시간을 표시합니다.
 
