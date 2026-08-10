@@ -12,7 +12,7 @@ overrides:
 
 patchedDependencies:
   image-size@1.2.1:
-    hash: edoxteg2g6o2taalc3ryqdravu
+    hash: f1b79058aaa477b222121e63c0ea9d5b4cd876e29c8a8de35aa06b3273dabb9e
     path: patches/image-size@1.2.1.patch
 
 importers:
@@ -6234,7 +6234,7 @@ snapshots:
 
   ignore@7.0.6: {}
 
-  image-size@1.2.1(patch_hash=edoxteg2g6o2taalc3ryqdravu):
+  image-size@1.2.1(patch_hash=f1b79058aaa477b222121e63c0ea9d5b4cd876e29c8a8de35aa06b3273dabb9e):
     dependencies:
       queue: 6.0.2
 
@@ -6726,7 +6726,7 @@ snapshots:
       flow-enums-runtime: 0.0.6
       graceful-fs: 4.2.11
       hermes-parser: 0.35.0
-      image-size: 1.2.1(patch_hash=edoxteg2g6o2taalc3ryqdravu)
+      image-size: 1.2.1(patch_hash=f1b79058aaa477b222121e63c0ea9d5b4cd876e29c8a8de35aa06b3273dabb9e)
       invariant: 2.2.4
       jest-worker: 29.7.0
       jsc-safe-url: 0.2.4
