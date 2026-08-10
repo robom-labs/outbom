@@ -8,6 +8,7 @@ import {
   getCurrentForecastSnapshot,
   getForecastAvailability,
   getForecastFreshness,
+  getRankedForecastWindows,
   getRecommendationState,
   hasIncompleteCurrentSafetyData,
   hasIncompleteSafetyData,
@@ -488,6 +489,29 @@ describe("native activity forecast", () => {
     expect(getRecommendationState(belowAverage)).toBe("limited");
     expect(getRecommendationState(rainy)).toBe("limited");
     expect(getRecommendationState(snapshot)).toBe("recommended");
+  });
+
+  it("추천 화면은 연속된 두 시간만 안전 여부와 점수 순으로 정렬한다", () => {
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00", "2026-07-16T09:00"]
+      }),
+      airResponse(
+        [12, 13, 14, 15],
+        [24, 25, 26, 27],
+        ["2026-07-16T06:00", "2026-07-16T07:00", "2026-07-16T08:00", "2026-07-16T09:00"]
+      ),
+      "walk",
+      "서울",
+      new Date("2026-07-16T06:30:00.000Z")
+    );
+    const windows = getRankedForecastWindows(snapshot, "2026-07-16");
+
+    expect(windows).toHaveLength(3);
+    expect(windows[0].recommended).toBe(true);
+    expect(windows[0].start).toMatch(/T\d{2}:00$/);
+    expect(windows[0].end).toMatch(/T\d{2}:00$/);
+    expect(windows.map((window) => window.score)).toEqual([...windows.map((window) => window.score)].sort((left, right) => right - left));
   });
 
   it("PM10 매우 나쁨도 안전 추천에서 제외한다", () => {

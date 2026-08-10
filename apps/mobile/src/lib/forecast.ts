@@ -46,6 +46,16 @@ export type ForecastSnapshot = {
   slots: ForecastSlot[];
 };
 
+export type RankedForecastWindow = {
+  start: string;
+  secondHour: string;
+  end: string;
+  score: number;
+  recommended: boolean;
+  apparentTemperature: number;
+  precipitationProbability: number;
+};
+
 export type ForecastApiResponse = {
   timezone?: string;
   hourly?: {
@@ -493,6 +503,26 @@ function bestWindow(slots: ForecastSlot[], activity: ActivityKey) {
     score: clamp(best.score),
     recommended: best.recommended
   };
+}
+
+export function getRankedForecastWindows(snapshot: ForecastSnapshot, date?: string): RankedForecastWindow[] {
+  const slots = date ? snapshot.slots.filter((slot) => slot.time.slice(0, 10) === date) : snapshot.slots;
+  return slots.slice(0, -1).map((slot, index) => {
+    const next = slots[index + 1];
+    return {
+      start: slot.time,
+      secondHour: next.time,
+      end: shiftLocalHour(next.time, 1),
+      score: clamp((slot.score + next.score) / 2),
+      recommended: isRecommendedWindow(slot, next, snapshot.activity),
+      apparentTemperature: (slot.apparentTemperature + next.apparentTemperature) / 2,
+      precipitationProbability: Math.max(slot.precipitationProbability ?? 0, next.precipitationProbability ?? 0),
+      consecutive: areConsecutiveHours(slot.time, next.time)
+    };
+  })
+    .filter((window) => window.consecutive)
+    .sort((left, right) => Number(right.recommended) - Number(left.recommended) || right.score - left.score)
+    .map(({ consecutive: _consecutive, ...window }) => window);
 }
 
 function assembleSnapshot(options: {
