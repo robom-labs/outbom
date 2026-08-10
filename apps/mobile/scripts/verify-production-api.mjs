@@ -1,7 +1,7 @@
-// 상업용 API 프록시가 연결되지 않은 EAS production 빌드를 공개 API로 잘못 출시하지 않게 차단한다.
+// 광고·구독 없는 비상업 공개판이 승인된 Open-Meteo 주소와 필수 응답 계약만 사용하도록 검증한다.
 const APPROVED_ENDPOINTS = {
-  EXPO_PUBLIC_FORECAST_API_URL: "https://weather.robom.kr/api/forecast",
-  EXPO_PUBLIC_AIR_QUALITY_API_URL: "https://weather.robom.kr/api/air-quality"
+  EXPO_PUBLIC_FORECAST_API_URL: "https://api.open-meteo.com/v1/forecast",
+  EXPO_PUBLIC_AIR_QUALITY_API_URL: "https://air-quality-api.open-meteo.com/v1/air-quality"
 };
 const REQUIRED_ENDPOINTS = Object.keys(APPROVED_ENDPOINTS);
 const FORECAST_ARRAYS = [
@@ -37,9 +37,6 @@ function validateEndpoint(name, rawValue) {
   if (url.port && url.port !== "443") return `${name}은(는) 표준 HTTPS 포트를 사용해야 합니다.`;
   if (url.username || url.password) return `${name}에 인증정보를 직접 넣을 수 없습니다.`;
   if (url.search || url.hash) return `${name}에 쿼리나 프래그먼트를 넣을 수 없습니다.`;
-  if (hostname === "open-meteo.com" || hostname.endsWith(".open-meteo.com")) {
-    return `${name}은(는) 공개·고객 Open-Meteo 주소가 아니라 키를 숨기는 라이선스 적용 프록시여야 합니다.`;
-  }
   const privateIpv4 = /^(?:0|10|127)\.|^169\.254\.|^172\.(?:1[6-9]|2\d|3[01])\.|^192\.168\.|^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname);
   const privateIpv6 = hostname === "::1" || /^(?:fc|fd)/.test(hostname) || /^fe[89ab]/.test(hostname);
   if (hostname === "localhost" || privateIpv4 || privateIpv6 || hostname.endsWith(".local")) {
@@ -49,7 +46,7 @@ function validateEndpoint(name, rawValue) {
     return `${name}에 예시 주소를 사용할 수 없습니다.`;
   }
   if (url.toString() !== APPROVED_ENDPOINTS[name]) {
-    return `${name}은(는) 승인된 robom.kr 운영 프록시 주소와 정확히 일치해야 합니다.`;
+    return `${name}은(는) 승인된 Open-Meteo 공개 API 주소와 정확히 일치해야 합니다.`;
   }
   return null;
 }
@@ -143,7 +140,7 @@ if (!shouldValidate) {
   if (errors.length > 0) {
     console.error("production API gate: BLOCKED");
     for (const error of errors) console.error(`- ${error}`);
-    console.error("EAS production 환경과 공용 DNS·TLS·필수 JSON 응답을 준비한 뒤 다시 빌드하세요.");
+    console.error("EAS production 환경의 승인 URL과 DNS·TLS·필수 JSON 응답을 확인한 뒤 다시 빌드하세요.");
     process.exitCode = 1;
   } else {
     console.log("production API gate: PASS");

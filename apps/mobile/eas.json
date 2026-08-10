@@ -17,6 +17,8 @@
       "autoIncrement": false,
       "environment": "production",
       "env": {
+        "EXPO_PUBLIC_FORECAST_API_URL": "https://api.open-meteo.com/v1/forecast",
+        "EXPO_PUBLIC_AIR_QUALITY_API_URL": "https://air-quality-api.open-meteo.com/v1/air-quality",
         "EXPO_PUBLIC_SUPPORT_URL": "https://robom.kr/support",
         "EXPO_PUBLIC_PRIVACY_URL": "https://robom.kr/privacy/outbom"
       },

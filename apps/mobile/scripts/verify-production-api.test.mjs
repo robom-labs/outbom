@@ -47,10 +47,10 @@ const airQualityPayload = {
   }
 };
 
-test("승인된 robom.kr 운영 프록시 두 개만 production 게이트를 통과한다", () => {
+test("승인된 Open-Meteo 공개 API 두 개만 production 게이트를 통과한다", () => {
   const result = runGate({
-    EXPO_PUBLIC_FORECAST_API_URL: "https://weather.robom.kr/api/forecast",
-    EXPO_PUBLIC_AIR_QUALITY_API_URL: "https://weather.robom.kr/api/air-quality"
+    EXPO_PUBLIC_FORECAST_API_URL: "https://api.open-meteo.com/v1/forecast",
+    EXPO_PUBLIC_AIR_QUALITY_API_URL: "https://air-quality-api.open-meteo.com/v1/air-quality"
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /production API gate: PASS/);
