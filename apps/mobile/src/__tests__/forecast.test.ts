@@ -121,8 +121,38 @@ describe("native activity forecast", () => {
     });
     expect(snapshot.score).toBeGreaterThanOrEqual(80);
     expect(snapshot.slots).toHaveLength(4);
+    expect(snapshot.timelineSlots).toHaveLength(4);
     expect(snapshot).not.toHaveProperty("latitude");
     expect(snapshot).not.toHaveProperty("longitude");
+  });
+
+  it("늦은 시각에도 오늘 그래프용 전체 시간대는 보존하고 추천은 현재 이후만 사용한다", () => {
+    const times = ["2026-07-16T20:00", "2026-07-16T21:00", "2026-07-16T22:00", "2026-07-16T23:00", "2026-07-17T00:00"];
+    const snapshot = buildForecastSnapshot(
+      weatherResponse({
+        time: times,
+        temperature_2m: [24, 23, 22, 21, 20],
+        apparent_temperature: [25, 24, 23, 22, 21],
+        precipitation: [0, 0, 0, 0, 0],
+        precipitation_probability: [20, 15, 10, 5, 5],
+        wind_speed_10m: [3, 2, 2, 1, 1],
+        wind_gusts_10m: [5, 4, 3, 2, 2],
+        visibility: [20000, 20000, 20000, 20000, 20000],
+        uv_index: [0, 0, 0, 0, 0],
+        relative_humidity_2m: [70, 68, 65, 62, 60],
+        weather_code: [1, 1, 1, 1, 1],
+        snowfall: [0, 0, 0, 0, 0],
+        is_day: [0, 0, 0, 0, 0]
+      }),
+      airResponse([12, 12, 12, 12, 12], [24, 24, 24, 24, 24], times),
+      "walk",
+      "서울",
+      new Date("2026-07-16T23:30:00.000Z")
+    );
+
+    expect(snapshot.forecastTime).toBe("2026-07-16T23:00");
+    expect(snapshot.slots.map((slot) => slot.time)).toEqual(["2026-07-16T23:00", "2026-07-17T00:00"]);
+    expect(snapshot.timelineSlots?.map((slot) => slot.time)).toEqual(times);
   });
 
   it("폭우와 나쁜 대기질에는 안전 점수 상한을 적용한다", () => {
@@ -423,6 +453,10 @@ describe("native activity forecast", () => {
     }
 
     const forecastUrl = new URL(urls.find((url) => !url.includes("air-quality")) as string);
+    const airQualityUrl = new URL(urls.find((url) => url.includes("air-quality")) as string);
+    expect(forecastUrl.searchParams.get("forecast_days")).toBe("2");
+    expect(airQualityUrl.searchParams.get("forecast_days")).toBe("2");
+    expect(forecastUrl.searchParams.has("forecast_hours")).toBe(false);
     expect(forecastUrl.searchParams.get("daily")).toBe("sunrise,sunset");
     expect(forecastUrl.searchParams.get("hourly")).toContain("wind_gusts_10m");
     expect(forecastUrl.searchParams.get("hourly")).toContain("visibility");

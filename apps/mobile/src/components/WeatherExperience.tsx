@@ -13,6 +13,7 @@ import {
   Backpack,
   BellRing,
   Bike,
+  Check,
   ChevronDown,
   ChevronRight,
   CloudRain,
@@ -30,6 +31,7 @@ import {
   X
 } from "lucide-react-native";
 import Svg, { Circle, Line, Path, Polyline, Rect, Text as SvgText } from "react-native-svg";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ACTIVITIES, ACTIVITY_ORDER, type ActivityKey } from "../lib/activities";
 import { type ForecastSlot, type RankedForecastWindow } from "../lib/forecast";
 
@@ -207,7 +209,14 @@ function ScoreChart({ slots, index, onIndexChange }: { slots: ForecastSlot[]; in
   const plotTop = 18;
   const plotBottom = 104;
   const fraction = (slotIndex: number) => slots.length > 1 ? slotIndex / (slots.length - 1) : 0.5;
-  const y = (score: number) => plotTop + (1 - Math.max(0, Math.min(100, score)) / 100) * (plotBottom - plotTop);
+  const scores = slots.map((slot) => Math.max(0, Math.min(100, slot.score)));
+  const rawMinimum = Math.min(...scores);
+  const rawMaximum = Math.max(...scores);
+  const visibleSpan = Math.min(100, Math.max(20, rawMaximum - rawMinimum + 10));
+  const domainCenter = (rawMinimum + rawMaximum) / 2;
+  const domainMinimum = Math.max(0, Math.min(100 - visibleSpan, domainCenter - visibleSpan / 2));
+  const domainMaximum = domainMinimum + visibleSpan;
+  const y = (score: number) => plotTop + (1 - (Math.max(domainMinimum, Math.min(domainMaximum, score)) - domainMinimum) / visibleSpan) * (plotBottom - plotTop);
   const points = slots.map((slot, slotIndex) => `${(fraction(slotIndex) * chartWidth).toFixed(1)},${y(slot.score).toFixed(1)}`).join(" ");
   const area = slots.length > 0 ? `M 0 ${plotBottom} L ${points.replaceAll(" ", " L ")} L ${chartWidth} ${plotBottom} Z` : "";
   const windows = useMemo(() => threeHourWindows(slots), [slots]);
@@ -265,7 +274,7 @@ function ScoreChart({ slots, index, onIndexChange }: { slots: ForecastSlot[]; in
         </View> : null}
       </View>
       <View style={styles.axisRow}>
-        {slots.filter((_, slotIndex) => slotIndex === 0 || slotIndex === slots.length - 1 || slotIndex % 3 === 0).map((slot) => <Text key={slot.time} style={styles.axisText}>{shortHour(slot.time)}</Text>)}
+        {slots.map((slot, slotIndex) => ({ slot, slotIndex })).filter(({ slotIndex }) => slotIndex === 0 || slotIndex === slots.length - 1 || slotIndex % Math.max(1, Math.ceil((slots.length - 1) / 3)) === 0).map(({ slot, slotIndex }) => <Text key={slot.time} style={[styles.axisText, { left: `${fraction(slotIndex) * 100}%` }]}>{shortHour(slot.time)}</Text>)}
       </View>
       <View style={styles.legendRow}>
         <Legend color="rgba(41,147,107,0.65)" label="베스트" />
@@ -294,18 +303,24 @@ function MetricTile({ icon: Icon, label, value, tone, isWorst }: { icon: IconTyp
 
 export function TodayDashboard({
   slots,
+  initialTime,
   activity,
   dayLabel,
   isReferenceOnly,
   onAlarm
 }: {
   slots: ForecastSlot[];
+  initialTime: string;
   activity: ActivityKey;
   dayLabel: string;
   isReferenceOnly: boolean;
   onAlarm: (time: string) => void;
 }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() => {
+    const exact = slots.findIndex((slot) => slot.time === initialTime);
+    if (exact >= 0) return exact;
+    return slots.reduce((best, slot, slotIndex) => Math.abs(new Date(slot.time).getTime() - new Date(initialTime).getTime()) < Math.abs(new Date(slots[best].time).getTime() - new Date(initialTime).getTime()) ? slotIndex : best, 0);
+  });
   const active = slots[Math.min(index, slots.length - 1)] ?? slots[0];
   const tone = scoreTone(active?.score ?? 0);
   const tones = active ? metricTone(active) : { temperature: "unknown", rain: "unknown", dust: "unknown", wind: "unknown" } as const;
@@ -444,6 +459,16 @@ export function PreparationDashboard({
   tips: string[];
   onAlarm: () => void;
 }) {
+  const [checked, setChecked] = useState<string[]>([]);
+  const essentials: Record<ActivityKey, string[]> = {
+    walk: ["쿠션 좋은 신발", "물 한 병", "휴대폰 배터리"],
+    dog: ["리드줄과 배변봉투", "강아지 물", "노면 온도 확인"],
+    run: ["러닝화 끈", "물 한 병", "출발 전 5분 준비운동"],
+    hike: ["물과 행동식", "헤드랜턴과 보조배터리", "경로·하산 시간 공유"],
+    bike: ["헬멧", "브레이크와 타이어 공기압", "전조등·후미등"]
+  };
+  const items = [...new Set([...essentials[activity], ...tips])];
+  const toggle = (item: string) => setChecked((current) => current.includes(item) ? current.filter((value) => value !== item) : [...current, item]);
   return <View style={styles.preparationStack}>
     <View style={styles.sectionHeading}>
       <Text accessibilityRole="header" style={styles.sectionTitle}>나가기 전 준비</Text>
@@ -455,21 +480,28 @@ export function PreparationDashboard({
       <Pressable accessibilityRole="button" accessibilityLabel="추천 시간 알림 설정" onPress={onAlarm} style={({ pressed }) => [styles.roundAlarm, pressed ? styles.pressed : null]}><BellRing size={22} color={colors.brandDeep} /></Pressable>
     </View>
     <View style={styles.prepCard}>
-      <Text style={styles.subsectionTitle}>꼭 확인할 것</Text>
-      {tips.map((tip, index) => <View key={tip} style={styles.prepRow}><View style={styles.prepNumber}><Text style={styles.prepNumberText}>{index + 1}</Text></View><Text style={styles.prepText}>{tip}</Text></View>)}
+      <View style={styles.prepCardHeading}><Text style={styles.subsectionTitle}>출발 전 전체 체크</Text><Text accessibilityLiveRegion="polite" style={styles.prepProgress}>{checked.length}/{items.length}</Text></View>
+      {items.map((item) => {
+        const done = checked.includes(item);
+        return <Pressable key={item} accessibilityRole="checkbox" accessibilityState={{ checked: done }} onPress={() => toggle(item)} style={({ pressed }) => [styles.prepRow, done ? styles.prepRowChecked : null, pressed ? styles.pressed : null]}>
+          <View style={[styles.prepCheck, done ? styles.prepCheckDone : null]}>{done ? <Check size={17} color="#fff" strokeWidth={3} /> : null}</View>
+          <Text style={[styles.prepText, done ? styles.prepTextChecked : null]}>{item}</Text>
+        </Pressable>;
+      })}
     </View>
     <View style={styles.prepNotice}><Text style={styles.prepNoticeTitle}>출발 직전 한 번 더 확인해요</Text><Text style={styles.prepNoticeText}>기상 특보·현장 통제·노면 상태가 앱 예보보다 우선입니다.</Text></View>
   </View>;
 }
 
 export function BottomNavigation({ active, onChange }: { active: PrimaryScreen; onChange: (screen: PrimaryScreen) => void }) {
+  const insets = useSafeAreaInsets();
   const items: { key: PrimaryScreen; label: string; icon: IconType }[] = [
     { key: "today", label: "오늘", icon: Sun },
     { key: "recommendations", label: "추천", icon: Sparkles },
     { key: "preparation", label: "준비", icon: Backpack },
     { key: "settings", label: "설정", icon: Settings }
   ];
-  return <View accessibilityRole="tablist" style={styles.bottomNav}>
+  return <View accessibilityRole="tablist" style={[styles.bottomNav, { paddingBottom: Math.max(8, insets.bottom), minHeight: 72 + Math.max(8, insets.bottom) }]}>
     {items.map((item) => {
       const Icon = item.icon;
       const selected = active === item.key;
@@ -533,8 +565,8 @@ const styles = StyleSheet.create({
   chartTouch: { position: "relative", overflow: "visible" },
   chartBubble: { position: "absolute", top: 0, transform: [{ translateX: -58 }], minWidth: 116, alignItems: "center", paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: colors.ink },
   chartBubbleText: { color: "#fff", fontSize: 10, fontWeight: "800" },
-  axisRow: { flexDirection: "row", justifyContent: "space-between", marginTop: -3 },
-  axisText: { color: colors.muted, fontSize: 10, fontWeight: "700" },
+  axisRow: { position: "relative", height: 17, marginTop: -3 },
+  axisText: { position: "absolute", width: 44, marginLeft: -22, color: colors.muted, fontSize: 10, fontWeight: "700", textAlign: "center" },
   legendRow: { flexDirection: "row", justifyContent: "center", gap: 14, marginTop: 12 },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
   legendDot: { width: 10, height: 10, borderRadius: 4 },
@@ -589,18 +621,22 @@ const styles = StyleSheet.create({
   prepHeroCopy: { minWidth: 0, flex: 1 },
   prepHeroKicker: { color: colors.brandDeep, fontSize: 12, fontWeight: "900" },
   prepHeroTitle: { marginTop: 5, color: colors.ink, fontSize: 20, fontWeight: "900" },
-  prepCard: { gap: 12, padding: 20, borderWidth: 1, borderColor: colors.line, borderRadius: 25, backgroundColor: colors.card },
-  prepRow: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12 },
-  prepNumber: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 16, backgroundColor: colors.brandSoft },
-  prepNumberText: { color: colors.brandDeep, fontSize: 12, fontWeight: "900" },
+  prepCard: { gap: 10, padding: 18, borderWidth: 1, borderColor: colors.line, borderRadius: 25, backgroundColor: colors.card },
+  prepCardHeading: { minHeight: 32, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  prepProgress: { minWidth: 48, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, overflow: "hidden", color: colors.brandDeep, backgroundColor: colors.brandSoft, fontSize: 11, fontWeight: "900", textAlign: "center" },
+  prepRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.line, borderRadius: 18, backgroundColor: colors.card },
+  prepRowChecked: { borderColor: colors.goodLine, backgroundColor: colors.goodSoft },
+  prepCheck: { width: 28, height: 28, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "#b8c5c1", borderRadius: 9, backgroundColor: colors.card },
+  prepCheckDone: { borderColor: colors.good, backgroundColor: colors.good },
   prepText: { minWidth: 0, flex: 1, color: colors.ink2, fontSize: 14, lineHeight: 21 },
+  prepTextChecked: { color: colors.good, fontWeight: "800", textDecorationLine: "line-through" },
   prepNotice: { gap: 4, padding: 17, borderRadius: 20, backgroundColor: colors.surface },
   prepNoticeTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
   prepNoticeText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  bottomNav: { position: "absolute", right: 0, bottom: 0, left: 0, minHeight: 80, flexDirection: "row", alignItems: "stretch", paddingHorizontal: 8, paddingTop: 7, paddingBottom: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: "rgba(255,250,240,0.97)" },
-  navButton: { flex: 1, minHeight: 62, alignItems: "center", justifyContent: "center", gap: 4, borderRadius: 18 },
-  navText: { color: colors.muted, fontSize: 11, fontWeight: "800" },
-  navTextActive: { color: colors.brandDeep, fontSize: 11, fontWeight: "900" },
+  bottomNav: { position: "absolute", right: 0, bottom: 0, left: 0, flexDirection: "row", alignItems: "flex-start", paddingHorizontal: 8, paddingTop: 7, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: "rgba(255,250,240,0.98)", shadowColor: "#665541", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 }, elevation: 8 },
+  navButton: { flex: 1, minHeight: 64, alignItems: "center", justifyContent: "center", gap: 4, borderRadius: 18 },
+  navText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  navTextActive: { color: colors.brandDeep, fontSize: 12, fontWeight: "900" },
   modalContainer: { flex: 1, justifyContent: "flex-end" },
   modalBackdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(24,39,39,0.44)" },
   activitySheet: { gap: 9, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 32, borderTopLeftRadius: 30, borderTopRightRadius: 30, backgroundColor: colors.paper },

@@ -270,7 +270,7 @@ export default function App() {
   const todayDate = activeSnapshot?.forecastTime.slice(0, 10) ?? snapshot?.forecastTime.slice(0, 10) ?? fallbackDate(now);
   const tomorrowDate = activeSnapshot?.slots.find((slot) => slot.time.slice(0, 10) !== todayDate)?.time.slice(0, 10) ?? null;
   const effectiveDate = selectedDate && (selectedDate === todayDate || selectedDate === tomorrowDate) ? selectedDate : todayDate;
-  const daySlots = activeSnapshot?.slots.filter((slot) => slot.time.slice(0, 10) === effectiveDate) ?? [];
+  const daySlots = (activeSnapshot?.timelineSlots ?? activeSnapshot?.slots ?? []).filter((slot) => slot.time.slice(0, 10) === effectiveDate);
   const rankedWindows = activeSnapshot ? getRankedForecastWindows(activeSnapshot, effectiveDate) : [];
   const preparationTips = activeSnapshot ? buildPreparationTips(activeSnapshot) : [];
   const bestWindowLabel = activeSnapshot ? formatWindow(activeSnapshot.bestTime, activeSnapshot.bestEndTime) : "추천 시간 확인 전";
@@ -375,7 +375,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <SafeAreaView edges={["top", "right", "bottom", "left"]} style={styles.safeArea}>
+      <SafeAreaView edges={["top", "right", "left"]} style={styles.safeArea}>
         <StatusBar style="dark" />
         <ScrollView ref={scrollRef} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
           {screen === "today" ? <WeatherControls
@@ -393,7 +393,7 @@ export default function App() {
           {loading ? <View accessibilityRole="progressbar" style={styles.loadingBar}><ActivityIndicator size="small" color={colors.brandDeep} /><Text style={styles.loadingText}>{feedback}</Text></View> : null}
           {dataWarning ? <View accessibilityRole="alert" style={styles.warningBanner}><Text style={styles.warningText}>{dataWarning}</Text></View> : null}
           {screen === "today" ? (
-            activeSnapshot && daySlots.length ? <TodayDashboard key={`${activity}-${effectiveDate}`} slots={daySlots} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} />
+            activeSnapshot && daySlots.length ? <TodayDashboard key={`${activity}-${effectiveDate}`} slots={daySlots} initialTime={effectiveDate === todayDate ? activeSnapshot.forecastTime : daySlots[0].time} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} />
               : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onSeoul={() => void refreshForecast(SEOUL)} />
           ) : screen === "recommendations" ? (
             activeSnapshot && daySlots.length ? <RecommendationDashboard slots={daySlots} windows={rankedWindows} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} />
@@ -475,7 +475,7 @@ function SettingsScreen({ reminderCount, onOpenAlerts, onOpenSettings, onOpenBat
     <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><BellRing size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>출발 알림</Text><Text style={styles.settingsDetail}>{reminderCount ? `${reminderCount}개의 알림이 저장되어 있어요.` : "저장된 알림이 없어요."}</Text></View></View><Pressable accessibilityRole="button" onPress={onOpenAlerts} style={styles.softButton}><Text style={styles.softButtonText}>내 알림 보기</Text></Pressable><Pressable accessibilityRole="button" onPress={onOpenSettings} style={styles.softButton}><Text style={styles.softButtonText}>기기 알림 설정 열기</Text></Pressable><Pressable accessibilityRole="button" onPress={onOpenBattery} style={styles.softButton}><Text style={styles.softButtonText}>배터리 제한 상태 확인하기</Text></Pressable></View>
     <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><MapPin size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>위치와 개인정보</Text><Text style={styles.settingsDetail}>위치는 예보 확인 때만 사용하고 좌표는 저장하지 않아요. 백그라운드 위치·광고·추적은 사용하지 않아요.</Text></View></View><Pressable accessibilityRole="button" onPress={onOpenLocation} style={styles.softButton}><Text style={styles.softButtonText}>기기 위치 설정 열기</Text></Pressable></View>
     <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><ShieldCheck size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>데이터와 지원</Text><Text style={styles.settingsDetail}>날씨·대기질 원자료를 활동별로 재계산한 참고 정보예요.</Text></View></View><Pressable accessibilityRole="link" onPress={() => open(OPEN_METEO_URL)} style={styles.softButton}><Text style={styles.softButtonText}>원자료 Open-Meteo</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(OPEN_METEO_LICENSE_URL)} style={styles.softButton}><Text style={styles.softButtonText}>CC BY 4.0 라이선스</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(SUPPORT_URL)} style={styles.softButton}><Text style={styles.softButtonText}>지원 센터</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(PRIVACY_URL)} style={styles.softButton}><Text style={styles.softButtonText}>개인정보처리방침</Text></Pressable></View>
-    <Text style={styles.versionText}>야외봄 v0.28.0 · kr.robom.outbom</Text>
+    <Text style={styles.versionText}>야외봄 v0.29.0 · kr.robom.outbom</Text>
   </View>;
 }
 
@@ -498,7 +498,7 @@ function ReminderSheet({ visible, targetTime, activityLabel, now, onClose, onSav
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.paper },
-  page: { width: "100%", maxWidth: 620, alignSelf: "center", gap: 14, paddingHorizontal: 14, paddingTop: 16, paddingBottom: 108 },
+  page: { width: "100%", maxWidth: 620, alignSelf: "center", gap: 14, paddingHorizontal: 14, paddingTop: 16, paddingBottom: 136 },
   loadingBar: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingHorizontal: 14, borderRadius: 16, backgroundColor: colors.brandSoft },
   loadingText: { color: colors.brandDeep, fontSize: 12, fontWeight: "800" },
   warningBanner: { paddingHorizontal: 15, paddingVertical: 12, borderRadius: 16, backgroundColor: colors.badSoft },

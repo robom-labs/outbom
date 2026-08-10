@@ -44,6 +44,7 @@ export type ForecastSnapshot = {
   sunset?: string | null;
   metrics: ForecastMetrics;
   slots: ForecastSlot[];
+  timelineSlots?: ForecastSlot[];
 };
 
 export type RankedForecastWindow = {
@@ -531,6 +532,7 @@ function assembleSnapshot(options: {
   generatedAt: string;
   timezone: string;
   slots: ForecastSlot[];
+  timelineSlots?: ForecastSlot[];
 }): ForecastSnapshot {
   if (options.slots.length === 0) throw new Error("사용 가능한 예보가 없습니다.");
   const current = options.slots[0];
@@ -566,7 +568,8 @@ function assembleSnapshot(options: {
       snowfall: current.snowfall ?? null,
       isDay: current.isDay ?? null
     },
-    slots: options.slots
+    slots: options.slots,
+    timelineSlots: options.timelineSlots ?? options.slots
   };
 }
 
@@ -588,16 +591,23 @@ export function buildForecastSnapshot(
   const currentSlot = readSlot(response, airQuality, sunTimes, activity, startIndex);
   if (!currentSlot) throw new Error("현재 시각 예보의 핵심 정보가 누락됐습니다.");
   const futureSlots = times
-    .slice(startIndex + 1, startIndex + 13)
+    .slice(startIndex + 1, startIndex + 19)
     .map((_, offset) => readSlot(response, airQuality, sunTimes, activity, startIndex + 1 + offset))
     .filter((slot): slot is ForecastSlot => slot !== null);
   const slots = [currentSlot, ...futureSlots];
+  const firstDate = currentSlot.time.slice(0, 10);
+  const secondDate = times.find((time) => time.slice(0, 10) > firstDate)?.slice(0, 10) ?? null;
+  const timelineSlots = times
+    .map((_, index) => readSlot(response, airQuality, sunTimes, activity, index))
+    .filter((slot): slot is ForecastSlot => slot !== null)
+    .filter((slot) => slot.time.slice(0, 10) === firstDate || slot.time.slice(0, 10) === secondDate);
   return assembleSnapshot({
     activity,
     locationName,
     generatedAt: now.toISOString(),
     timezone: response.timezone ?? "UTC",
-    slots
+    slots,
+    timelineSlots
   });
 }
 
@@ -606,12 +616,17 @@ export function rescoreForecastSnapshot(snapshot: ForecastSnapshot, activity: Ac
     ...slot,
     ...scoreActivityConditions(slot, activity)
   }));
+  const timelineSlots = (snapshot.timelineSlots ?? snapshot.slots).map((slot) => ({
+    ...slot,
+    ...scoreActivityConditions(slot, activity)
+  }));
   return assembleSnapshot({
     activity,
     locationName: snapshot.locationName,
     generatedAt: snapshot.generatedAt,
     timezone: snapshot.timezone,
-    slots
+    slots,
+    timelineSlots
   });
 }
 
@@ -631,7 +646,8 @@ export function getCurrentForecastSnapshot(snapshot: ForecastSnapshot, now = new
     locationName: snapshot.locationName,
     generatedAt: snapshot.generatedAt,
     timezone: snapshot.timezone,
-    slots
+    slots,
+    timelineSlots: snapshot.timelineSlots ?? snapshot.slots
   });
 }
 
@@ -769,7 +785,7 @@ export async function fetchForecastSnapshot(options: {
   for (const url of [forecastUrl, airQualityUrl]) {
     url.searchParams.set("latitude", String(options.latitude));
     url.searchParams.set("longitude", String(options.longitude));
-    url.searchParams.set("forecast_hours", "18");
+    url.searchParams.set("forecast_days", "2");
     url.searchParams.set("timezone", "auto");
   }
   forecastUrl.searchParams.set(

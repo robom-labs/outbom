@@ -90,7 +90,9 @@ export function isForecastSnapshot(value: unknown): value is ForecastSnapshot {
     && isMetrics(snapshot.metrics)
     && Array.isArray(snapshot.slots)
     && snapshot.slots.length > 0
-    && snapshot.slots.every(isForecastSlot);
+    && snapshot.slots.every(isForecastSlot)
+    && (snapshot.timelineSlots === undefined
+      || (Array.isArray(snapshot.timelineSlots) && snapshot.timelineSlots.length > 0 && snapshot.timelineSlots.every(isForecastSlot)));
 }
 
 function isLegacySnapshot(value: unknown): value is LegacyForecastSnapshot {
