@@ -57,6 +57,13 @@ describe("native app contract", () => {
   it("foreground 위치와 사용자 선택 알림만 구성하고 WebView·민감 알람 권한을 포함하지 않는다", () => {
     expect(packageInfo.dependencies).not.toHaveProperty("react-native-webview");
     expect(appConfig.expo.android.blockedPermissions).toContain("android.permission.ACCESS_BACKGROUND_LOCATION");
+    expect(appConfig.expo.android.blockedPermissions).toEqual(
+      expect.arrayContaining([
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+      ]),
+    );
     expect(appConfig.expo.android.permissions).not.toContain("SCHEDULE_EXACT_ALARM");
     expect(appConfig.expo.android.permissions).not.toContain("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS");
   });
