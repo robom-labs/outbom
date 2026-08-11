@@ -6,29 +6,38 @@ import packageInfo from "../../package.json";
 
 describe("native app contract", () => {
   it("Expo SDK 57과 Android/iOS 식별자를 고정한다", () => {
-    expect(packageInfo.version).toBe("0.25.6");
+    expect(packageInfo.version).toBe("0.29.0");
+    expect(appConfig.expo.version).toBe(packageInfo.version);
     expect(packageInfo.dependencies.expo).toMatch(/^~57\./);
-    expect(packageInfo.dependencies["react-native"]).toBe("0.86.0");
+    expect(packageInfo.dependencies["react-native"]).toBe("0.86.2");
+    expect(packageInfo.dependencies["react-native-safe-area-context"]).toBe("~5.7.0");
+    expect(packageInfo.dependencies["expo-notifications"]).toBe("~57.0.9");
+    expect(packageInfo.dependencies["expo-intent-launcher"]).toBe("~57.0.1");
     expect(appConfig.expo.scheme).toBe("outbom");
     expect(appConfig.expo.platforms).toEqual(["ios", "android"]);
     expect(appConfig.expo.orientation).toBe("default");
     expect(appConfig.expo.ios.supportsTablet).toBe(true);
     expect(appConfig.expo.ios.bundleIdentifier).toBe("kr.robom.outbom");
+    expect(appConfig.expo.ios.buildNumber).toBe("11");
     expect(appConfig.expo.android.package).toBe("kr.robom.outbom");
+    expect(appConfig.expo.android.versionCode).toBe(12);
     expect(appConfig.expo.ios.associatedDomains).toContain("applinks:robom.kr");
     expect(appConfig.expo.android.intentFilters[0]?.data[0]).toMatchObject({
       scheme: "https",
       host: "robom.kr",
       pathPrefix: "/get/outbom"
     });
+    expect(appConfig.expo.plugins).toContain("expo-notifications");
   });
 
   it("EAS development, preview, production 프로필을 모두 제공한다", () => {
     expect(Object.keys(easConfig.build).sort()).toEqual(["development", "preview", "production"]);
     expect(easConfig.build.development.developmentClient).toBe(true);
     expect(easConfig.build.preview.distribution).toBe("internal");
+    expect(easConfig.build.production.environment).toBe("production");
     expect(easConfig.build.production.android?.buildType).toBe("app-bundle");
     expect(easConfig.build.production.env?.EXPO_PUBLIC_PRIVACY_URL).toBe("https://robom.kr/privacy/outbom");
+    expect(packageInfo.scripts["eas-build-pre-install"]).toBe("node scripts/verify-production-api.mjs");
   });
 
   it("Android 16 대상 API와 컴파일 SDK를 36으로 고정한다", () => {
@@ -43,8 +52,10 @@ describe("native app contract", () => {
     });
   });
 
-  it("foreground 위치만 구성하고 WebView 의존성을 포함하지 않는다", () => {
+  it("foreground 위치와 사용자 선택 알림만 구성하고 WebView·민감 알람 권한을 포함하지 않는다", () => {
     expect(packageInfo.dependencies).not.toHaveProperty("react-native-webview");
     expect(appConfig.expo.android.blockedPermissions).toContain("android.permission.ACCESS_BACKGROUND_LOCATION");
+    expect(appConfig.expo.android.permissions).not.toContain("SCHEDULE_EXACT_ALARM");
+    expect(appConfig.expo.android.permissions).not.toContain("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS");
   });
 });
