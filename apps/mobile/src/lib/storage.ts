@@ -2,10 +2,13 @@
 import Storage from "expo-sqlite/kv-store";
 import { isActivityKey, type ActivityKey } from "./activities";
 import { scoreActivityConditions, type ForecastMetrics, type ForecastSlot, type ForecastSnapshot } from "./forecast";
+import { isSavedLocation, type SavedLocation } from "./locations";
 
 export const LAST_FORECAST_KEY = "outbom:native:last-forecast:v2";
 export const LEGACY_LAST_FORECAST_KEY = "outbom:native:last-forecast:v1";
 export const SELECTED_ACTIVITY_KEY = "outbom:native:activity:v1";
+export const SAVED_LOCATIONS_KEY = "outbom:native:saved-locations:v1";
+export const PREPARATION_CHECKS_KEY = "outbom:native:preparation-checks:v1";
 
 type LegacyForecastSnapshot = {
   schemaVersion: 1;
@@ -196,6 +199,49 @@ export async function loadSelectedActivity(): Promise<ActivityKey> {
 export async function saveSelectedActivity(activity: ActivityKey) {
   try {
     await Storage.setItem(SELECTED_ACTIVITY_KEY, activity);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadSavedLocations(): Promise<SavedLocation[]> {
+  try {
+    const value = await readJson(SAVED_LOCATIONS_KEY);
+    return Array.isArray(value) ? value.filter(isSavedLocation).slice(0, 24) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveSavedLocations(locations: SavedLocation[]) {
+  try {
+    await Storage.setItem(SAVED_LOCATIONS_KEY, JSON.stringify(locations.filter(isSavedLocation).slice(0, 24)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeCheckMap(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key, items]) => key.length > 0 && Array.isArray(items))
+    .map(([key, items]) => [key, (items as unknown[]).filter((item): item is string => typeof item === "string")]));
+}
+
+export async function loadPreparationChecks() {
+  try {
+    const value = await readJson(PREPARATION_CHECKS_KEY);
+    return sanitizeCheckMap(value);
+  } catch {
+    return {};
+  }
+}
+
+export async function savePreparationChecks(checks: Record<string, string[]>) {
+  try {
+    await Storage.setItem(PREPARATION_CHECKS_KEY, JSON.stringify(checks));
     return true;
   } catch {
     return false;

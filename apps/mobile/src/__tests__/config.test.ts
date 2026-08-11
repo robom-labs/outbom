@@ -6,7 +6,7 @@ import packageInfo from "../../package.json";
 
 describe("native app contract", () => {
   it("Expo SDK 57과 Android/iOS 식별자를 고정한다", () => {
-    expect(packageInfo.version).toBe("0.29.0");
+    expect(packageInfo.version).toBe("0.30.0");
     expect(appConfig.expo.version).toBe(packageInfo.version);
     expect(packageInfo.dependencies.expo).toMatch(/^~57\./);
     expect(packageInfo.dependencies["react-native"]).toBe("0.86.2");
@@ -18,9 +18,9 @@ describe("native app contract", () => {
     expect(appConfig.expo.orientation).toBe("default");
     expect(appConfig.expo.ios.supportsTablet).toBe(true);
     expect(appConfig.expo.ios.bundleIdentifier).toBe("kr.robom.outbom");
-    expect(appConfig.expo.ios.buildNumber).toBe("11");
+    expect(appConfig.expo.ios.buildNumber).toBe("12");
     expect(appConfig.expo.android.package).toBe("kr.robom.outbom");
-    expect(appConfig.expo.android.versionCode).toBe(12);
+    expect(appConfig.expo.android.versionCode).toBe(130);
     expect(appConfig.expo.ios.associatedDomains).toContain("applinks:robom.kr");
     expect(appConfig.expo.android.intentFilters[0]?.data[0]).toMatchObject({
       scheme: "https",
@@ -40,14 +40,16 @@ describe("native app contract", () => {
     expect(packageInfo.scripts["eas-build-pre-install"]).toBe("node scripts/verify-production-api.mjs");
   });
 
-  it("Android 16 대상 API와 컴파일 SDK를 36으로 고정한다", () => {
+  it("Android 16 대상 API·R8·리소스 축소를 고정한다", () => {
     const buildProperties = appConfig.expo.plugins.find((plugin) => plugin[0] === "expo-build-properties");
 
     expect(packageInfo.dependencies["expo-build-properties"]).toMatch(/^~57\./);
     expect(buildProperties?.[1]).toMatchObject({
       android: {
         compileSdkVersion: 36,
-        targetSdkVersion: 36
+        targetSdkVersion: 36,
+        enableMinifyInReleaseBuilds: true,
+        enableShrinkResourcesInReleaseBuilds: true
       }
     });
   });

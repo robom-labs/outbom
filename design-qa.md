@@ -1,10 +1,15 @@
-<!-- 야외봄 0.29.0 화면을 사용자가 지정한 이전 기준 이미지와 직접 대조한 디자인 QA 기록이다. -->
+<!-- 야외봄 0.30.0 화면을 사용자가 지정한 이전 기준 이미지와 직접 대조한 디자인 QA 기록이다. -->
 
-# 야외봄 0.29.0 모바일 디자인 QA
+# 야외봄 0.30.0 모바일 디자인 QA
 
 ## 비교 기준
 
 - Source visual truth
+  - `/tmp/codex-remote-attachments/019f4f38-8f88-7161-9caa-b8cfc316dc5f/613340e6-e412-4507-aa5f-b3af4d7e3839/1-Photo-1.jpg`
+  - `/tmp/codex-remote-attachments/019f4f38-8f88-7161-9caa-b8cfc316dc5f/613340e6-e412-4507-aa5f-b3af4d7e3839/2-Photo-2.jpg`
+  - `/tmp/codex-remote-attachments/019f4f38-8f88-7161-9caa-b8cfc316dc5f/613340e6-e412-4507-aa5f-b3af4d7e3839/3-Photo-3.jpg`
+  - `/tmp/codex-remote-attachments/019f4f38-8f88-7161-9caa-b8cfc316dc5f/613340e6-e412-4507-aa5f-b3af4d7e3839/4-Photo-4.jpg`
+  - `/tmp/codex-remote-attachments/019f4f38-8f88-7161-9caa-b8cfc316dc5f/613340e6-e412-4507-aa5f-b3af4d7e3839/5-Photo-5.jpg`
   - `/tmp/codex-remote-attachments/019f4f38-eb04-70a0-b091-778073441e8b/d52965fc-ec26-49aa-8f91-6ce7c837a4c9/1-Photo-1.jpg`
   - `/tmp/codex-remote-attachments/019f4f38-eb04-70a0-b091-778073441e8b/d52965fc-ec26-49aa-8f91-6ce7c837a4c9/2-Photo-2.jpg`
 - 사용자가 지적한 회귀 화면
@@ -65,5 +70,6 @@
 
 - 기준 캡처와 구현 캡처의 기기 세로 비율 및 시스템 글꼴 렌더링은 다르며 허용 가능한 P3다.
 - 웹 검증에서 클릭한 탭에 보이는 포커스 외곽선은 브라우저 포커스 표현이며 Android 네이티브 스타일에는 같은 테두리가 없다.
+- 이번 0.30.0 위치 선택·날씨 상세·동적 준비물과 폴더블·태블릿 재배치는 구조·상태·단위 테스트와 Android·iOS export까지 검증했다. 현재 실행 환경에 연결된 Android/iOS 실기기나 시뮬레이터가 없어 최신 기준 사진과 실제 네이티브 렌더를 같은 캔버스에 놓는 최종 시각 비교는 `BLOCKED_DEVICE`다.
 
-final result: passed
+final result: blocked_device

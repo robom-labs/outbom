@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View
 } from "react-native";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -21,8 +22,8 @@ import { StatusBar } from "expo-status-bar";
 import { BellRing, ExternalLink, MapPin, RefreshCw, ShieldCheck } from "lucide-react-native";
 import { initialWindowMetrics, SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { ACTIVITIES, type ActivityKey } from "./src/lib/activities";
+import { getAdaptiveLayout } from "./src/lib/adaptive-layout";
 import {
-  buildPreparationTips,
   fetchForecastSnapshot,
   getAirQualityCoverage,
   getCurrentForecastSnapshot,
@@ -34,6 +35,8 @@ import {
   rescoreForecastSnapshot,
   type ForecastSnapshot
 } from "./src/lib/forecast";
+import { LocationPickerSheet } from "./src/components/LocationPickerSheet";
+import { MetricDetailSheet } from "./src/components/MetricDetailSheet";
 import {
   ActivityPickerSheet,
   announceScreen,
@@ -46,6 +49,16 @@ import {
 } from "./src/components/WeatherExperience";
 import { cancelReminder, requestReminderPermission, scheduleReminder } from "./src/lib/notifications";
 import {
+  changeLocationKind,
+  createRecentLocation,
+  removeSavedLocation,
+  upsertRecentLocation,
+  type SavedLocation,
+  type SavedLocationKind
+} from "./src/lib/locations";
+import { getMetricDetail, type MetricDetail, type MetricKey } from "./src/lib/metric-details";
+import { getPreparationPlan, type ActivityDuration } from "./src/lib/preparation";
+import {
   createReminderDraft,
   isFutureReminder,
   LEAD_OPTIONS,
@@ -53,16 +66,25 @@ import {
   saveReminders,
   type Reminder
 } from "./src/lib/reminders";
-import { loadForecastSnapshot, loadSelectedActivity, saveForecastSnapshot, saveSelectedActivity } from "./src/lib/storage";
+import {
+  loadForecastSnapshot,
+  loadPreparationChecks,
+  loadSavedLocations,
+  loadSelectedActivity,
+  saveForecastSnapshot,
+  savePreparationChecks,
+  saveSavedLocations,
+  saveSelectedActivity
+} from "./src/lib/storage";
 
 type LocationState = "idle" | "requesting" | "granted" | "denied" | "unavailable";
 type AppScreen = PrimaryScreen | "alerts";
 
-const SEOUL = { latitude: 37.5665, longitude: 126.978, locationName: "서울" };
 const SUPPORT_URL = process.env.EXPO_PUBLIC_SUPPORT_URL ?? "https://robom.kr/support";
 const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL ?? "https://robom.kr/privacy/outbom";
 const OPEN_METEO_URL = "https://open-meteo.com/";
 const OPEN_METEO_LICENSE_URL = "https://open-meteo.com/en/license";
+const OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
 
 const colors = {
   paper: "#fffaf0",
@@ -119,6 +141,8 @@ function formatLocationAddress(address: Location.LocationGeocodedAddress | undef
 }
 
 export default function App() {
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
   const [snapshot, setSnapshot] = useState<ForecastSnapshot | null>(null);
   const [activity, setActivity] = useState<ActivityKey>("walk");
   const [locationState, setLocationState] = useState<LocationState>("idle");
@@ -128,9 +152,14 @@ export default function App() {
   const [now, setNow] = useState(() => new Date());
   const [screen, setScreen] = useState<AppScreen>("today");
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
+  const [preparationChecks, setPreparationChecks] = useState<Record<string, string[]>>({});
+  const [preparationDuration, setPreparationDuration] = useState<ActivityDuration>("normal");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [isActivityPickerOpen, setIsActivityPickerOpen] = useState(false);
+  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
   const [isReminderSheetOpen, setIsReminderSheetOpen] = useState(false);
+  const [metricDetail, setMetricDetail] = useState<MetricDetail | null>(null);
   const [reminderTargetTime, setReminderTargetTime] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const announcedForecastTime = useRef<string | null>(null);
@@ -138,8 +167,8 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([loadForecastSnapshot(), loadSelectedActivity(), loadReminders()])
-      .then(([stored, selected, storedReminders]) => {
+    void Promise.all([loadForecastSnapshot(), loadSelectedActivity(), loadReminders(), loadSavedLocations(), loadPreparationChecks()])
+      .then(([stored, selected, storedReminders, storedLocations, storedChecks]) => {
         if (!active) return;
         const rescored = stored ? rescoreForecastSnapshot(stored, selected) : null;
         const current = rescored ? getCurrentForecastSnapshot(rescored, new Date()) : null;
@@ -148,6 +177,8 @@ export default function App() {
         setActivity(selected);
         setSnapshot(rescored);
         setReminders(futureReminders);
+        setSavedLocations(storedLocations);
+        setPreparationChecks(storedChecks);
         if (futureReminders.length !== storedReminders.length) void saveReminders(futureReminders);
         if (rescored && rescored !== stored) void saveForecastSnapshot(rescored);
         setFeedback(current
@@ -156,7 +187,7 @@ export default function App() {
             ? "현재 시간의 저장 예보가 비어 있어 새 예보가 필요해요."
             : rescored
               ? "저장된 예보 시간이 지났어요. 새 예보를 확인해 주세요."
-              : "현재 위치 또는 서울 예보로 첫 판단을 확인해 보세요.");
+              : "현재 위치를 확인하거나 원하는 장소를 검색해 첫 판단을 확인해 보세요.");
       })
       .catch(() => {
         if (active) setFeedback("저장된 예보를 읽지 못했어요. 새 예보를 확인해 주세요.");
@@ -193,7 +224,7 @@ export default function App() {
     };
   }, []);
 
-  const refreshForecast = async (options: { latitude: number; longitude: number; locationName: string }, activeRequest = ++requestSequence.current) => {
+  const refreshForecast = async (options: { latitude: number; longitude: number; locationName: string; savedLocation?: SavedLocation }, activeRequest = ++requestSequence.current) => {
     setLoading(true);
     setFeedback(`${options.locationName}의 ${ACTIVITIES[activity].label} 예보를 확인하고 있어요.`);
     try {
@@ -202,6 +233,16 @@ export default function App() {
       setSnapshot(next);
       const saved = await saveForecastSnapshot(next);
       if (activeRequest !== requestSequence.current) return;
+      const selectedLocation = options.savedLocation ?? createRecentLocation({
+        name: options.locationName,
+        latitude: options.latitude,
+        longitude: options.longitude
+      });
+      setSavedLocations((current) => {
+        const updated = upsertRecentLocation(current, selectedLocation);
+        void saveSavedLocations(updated);
+        return updated;
+      });
       setSelectedDate(next.forecastTime.slice(0, 10));
       setFeedback(saved ? "새 예보와 추천 시간을 기기에 저장했어요." : "예보는 갱신했지만 기기 저장을 마치지 못했어요.");
     } catch {
@@ -221,29 +262,83 @@ export default function App() {
       if (activeRequest !== requestSequence.current) return;
       if (!permission.granted) {
         setLocationState("denied");
-        setFeedback(snapshot ? "위치 권한이 없어 저장된 예보를 유지해요." : "위치 권한 없이도 서울 예보를 사용할 수 있어요.");
+        setFeedback(snapshot ? "위치 권한이 없어 저장된 예보를 유지해요." : "위치 권한 없이도 장소를 검색해 예보를 볼 수 있어요.");
         return;
       }
       if (!(await Location.hasServicesEnabledAsync())) {
         if (activeRequest !== requestSequence.current) return;
         setLocationState("unavailable");
-        setFeedback("기기 위치 서비스를 켜거나 서울 예보를 이용해 주세요.");
+        setFeedback("기기 위치 서비스를 켜거나 원하는 장소를 검색해 주세요.");
         return;
       }
       const position = await withTimeout(Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }), 15_000);
       if (activeRequest !== requestSequence.current) return;
       setLocationState("granted");
       const addresses = await Location.reverseGeocodeAsync({ latitude: position.coords.latitude, longitude: position.coords.longitude }).catch(() => []);
+      const locationName = formatLocationAddress(addresses[0]);
       await refreshForecast({
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
-        locationName: formatLocationAddress(addresses[0])
+        locationName,
+        savedLocation: createRecentLocation({
+          name: locationName,
+          detail: "현재 위치로 확인",
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        })
       }, activeRequest);
+      if (activeRequest === requestSequence.current) setIsLocationPickerOpen(false);
     } catch {
       if (activeRequest !== requestSequence.current) return;
       setLocationState("unavailable");
-      setFeedback(snapshot ? "현재 위치를 확인하지 못해 저장된 예보를 유지해요." : "현재 위치를 확인하지 못했어요. 서울 예보를 이용해 주세요.");
+      setFeedback(snapshot ? "현재 위치를 확인하지 못해 저장된 예보를 유지해요." : "현재 위치를 확인하지 못했어요. 원하는 장소를 검색해 주세요.");
     }
+  };
+
+  const searchLocations = async (query: string) => {
+    const response = await fetch(`${OPEN_METEO_GEOCODING_URL}?name=${encodeURIComponent(query)}&count=5&language=ko&format=json&countryCode=KR`);
+    if (!response.ok) throw new Error(`location search ${response.status}`);
+    const payload = await response.json() as { results?: { id?: number; name?: string; latitude?: number; longitude?: number; admin1?: string; admin2?: string; admin3?: string }[] };
+    return (payload.results ?? [])
+      .filter((item) => typeof item.name === "string" && typeof item.latitude === "number" && typeof item.longitude === "number")
+      .map((item) => createRecentLocation({
+        name: item.name as string,
+        detail: [item.admin3, item.admin2, item.admin1].filter((value, index, values) => value && values.indexOf(value) === index).join(" · "),
+        latitude: item.latitude as number,
+        longitude: item.longitude as number
+      }));
+  };
+
+  const selectSavedLocation = async (location: SavedLocation) => {
+    setIsLocationPickerOpen(false);
+    await refreshForecast({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      locationName: location.name,
+      savedLocation: location
+    });
+  };
+
+  const changeSavedLocationKind = (location: SavedLocation, kind: SavedLocationKind) => {
+    setSavedLocations((current) => {
+      const withLocation = upsertRecentLocation(current, location);
+      const updated = changeLocationKind(withLocation, location.id, kind);
+      void saveSavedLocations(updated);
+      return updated;
+    });
+  };
+
+  const deleteSavedLocation = (location: SavedLocation) => {
+    setSavedLocations((current) => {
+      const updated = removeSavedLocation(current, location.id);
+      void saveSavedLocations(updated);
+      return updated;
+    });
+    setFeedback(`${location.name}을 저장 위치에서 지웠어요.`);
+  };
+
+  const openMetricDetail = (key: MetricKey, slot: Parameters<typeof getMetricDetail>[1]) => {
+    setMetricDetail(getMetricDetail(key, slot, activity));
   };
 
   const selectActivity = (nextActivity: ActivityKey) => {
@@ -272,8 +367,14 @@ export default function App() {
   const effectiveDate = selectedDate && (selectedDate === todayDate || selectedDate === tomorrowDate) ? selectedDate : todayDate;
   const daySlots = (activeSnapshot?.timelineSlots ?? activeSnapshot?.slots ?? []).filter((slot) => slot.time.slice(0, 10) === effectiveDate);
   const rankedWindows = activeSnapshot ? getRankedForecastWindows(activeSnapshot, effectiveDate) : [];
-  const preparationTips = activeSnapshot ? buildPreparationTips(activeSnapshot) : [];
-  const bestWindowLabel = activeSnapshot ? formatWindow(activeSnapshot.bestTime, activeSnapshot.bestEndTime) : "추천 시간 확인 전";
+  const bestWindow = rankedWindows[0] ?? null;
+  const preparationSlot = daySlots.find((slot) => slot.time === bestWindow?.start)
+    ?? [...daySlots].sort((a, b) => b.score - a.score)[0]
+    ?? null;
+  const preparationPlan = preparationSlot ? getPreparationPlan(activity, preparationSlot, preparationDuration) : null;
+  const preparationKey = preparationSlot ? `${effectiveDate}:${activity}:${preparationSlot.time}:${preparationDuration}` : null;
+  const checkedPreparationItems = preparationKey ? preparationChecks[preparationKey] ?? [] : [];
+  const bestWindowLabel = bestWindow ? formatWindow(bestWindow.start, bestWindow.end) : activeSnapshot ? formatWindow(activeSnapshot.bestTime, activeSnapshot.bestEndTime) : "추천 시간 확인 전";
   const primaryScreen: PrimaryScreen = screen === "alerts" ? "settings" : screen;
   const busy = !hydrated || loading || locationState === "requesting";
   const dataWarning = activeSnapshot && (airQualityCoverage !== "complete" || safetyDataIncomplete)
@@ -283,7 +384,22 @@ export default function App() {
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (isReminderSheetOpen || isActivityPickerOpen) return false;
+      if (metricDetail) {
+        setMetricDetail(null);
+        return true;
+      }
+      if (isLocationPickerOpen) {
+        setIsLocationPickerOpen(false);
+        return true;
+      }
+      if (isReminderSheetOpen) {
+        setIsReminderSheetOpen(false);
+        return true;
+      }
+      if (isActivityPickerOpen) {
+        setIsActivityPickerOpen(false);
+        return true;
+      }
       if (screen !== "today") {
         setScreen("today");
         requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: 0, animated: true }));
@@ -292,7 +408,7 @@ export default function App() {
       return false;
     });
     return () => subscription.remove();
-  }, [isActivityPickerOpen, isReminderSheetOpen, screen]);
+  }, [isActivityPickerOpen, isLocationPickerOpen, isReminderSheetOpen, metricDetail, screen]);
 
   useEffect(() => {
     if (!hydrated || Platform.OS !== "ios") return;
@@ -307,6 +423,17 @@ export default function App() {
     setScreen(next);
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: 0, animated: false }));
     announceScreen(next);
+  };
+
+  const togglePreparationItem = (itemId: string) => {
+    if (!preparationKey) return;
+    setPreparationChecks((current) => {
+      const selected = current[preparationKey] ?? [];
+      const nextSelected = selected.includes(itemId) ? selected.filter((id) => id !== itemId) : [...selected, itemId];
+      const next = { ...current, [preparationKey]: nextSelected };
+      void savePreparationChecks(next);
+      return next;
+    });
   };
 
   const openReminderFor = (targetTime?: string) => {
@@ -377,7 +504,17 @@ export default function App() {
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <SafeAreaView edges={["top", "right", "left"]} style={styles.safeArea}>
         <StatusBar style="dark" />
-        <ScrollView ref={scrollRef} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.page,
+            {
+              maxWidth: adaptiveLayout.pageMaxWidth,
+              paddingHorizontal: adaptiveLayout.horizontalPadding,
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
+        >
           {screen === "today" ? <WeatherControls
             activity={activity}
             locationName={activeSnapshot?.locationName ?? snapshot?.locationName ?? "현재 위치로 예보 확인"}
@@ -387,22 +524,22 @@ export default function App() {
             busy={busy}
             onOpenActivities={() => setIsActivityPickerOpen(true)}
             onSelectDate={setSelectedDate}
-            onRefreshLocation={() => void requestCurrentLocation()}
+            onOpenLocation={() => setIsLocationPickerOpen(true)}
           /> : null}
 
           {loading ? <View accessibilityRole="progressbar" style={styles.loadingBar}><ActivityIndicator size="small" color={colors.brandDeep} /><Text style={styles.loadingText}>{feedback}</Text></View> : null}
           {dataWarning ? <View accessibilityRole="alert" style={styles.warningBanner}><Text style={styles.warningText}>{dataWarning}</Text></View> : null}
           {screen === "today" ? (
-            activeSnapshot && daySlots.length ? <TodayDashboard key={`${activity}-${effectiveDate}`} slots={daySlots} initialTime={effectiveDate === todayDate ? activeSnapshot.forecastTime : daySlots[0].time} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} />
-              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onSeoul={() => void refreshForecast(SEOUL)} />
+            activeSnapshot && daySlots.length ? <TodayDashboard key={`${activity}-${effectiveDate}`} slots={daySlots} initialTime={effectiveDate === todayDate ? activeSnapshot.forecastTime : daySlots[0].time} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} onOpenMetric={openMetricDetail} />
+              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onLocations={() => setIsLocationPickerOpen(true)} />
           ) : screen === "recommendations" ? (
-            activeSnapshot && daySlots.length ? <RecommendationDashboard slots={daySlots} windows={rankedWindows} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} />
-              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onSeoul={() => void refreshForecast(SEOUL)} />
+            activeSnapshot && daySlots.length ? <RecommendationDashboard slots={daySlots} windows={rankedWindows} activity={activity} dayLabel={effectiveDate === todayDate ? "오늘" : "내일"} isReferenceOnly={isReferenceOnly} onAlarm={openReminderFor} onOpenMetric={openMetricDetail} />
+              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onLocations={() => setIsLocationPickerOpen(true)} />
           ) : screen === "preparation" ? (
-            activeSnapshot ? <PreparationDashboard activity={activity} windowLabel={bestWindowLabel} tips={preparationTips} onAlarm={() => openReminderFor(activeSnapshot.bestTime)} />
-              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onSeoul={() => void refreshForecast(SEOUL)} />
+            activeSnapshot && preparationPlan ? <PreparationDashboard activity={activity} windowLabel={bestWindowLabel} duration={preparationDuration} plan={preparationPlan} checked={checkedPreparationItems} onDurationChange={setPreparationDuration} onToggle={togglePreparationItem} onAlarm={() => openReminderFor(bestWindow?.start ?? activeSnapshot.bestTime)} />
+              : <EmptyForecast availability={forecastAvailability} busy={busy} onCurrent={() => void requestCurrentLocation()} onLocations={() => setIsLocationPickerOpen(true)} />
           ) : screen === "alerts" ? <AlertsScreen reminders={reminders} feedback={feedback} onRemove={(reminder) => void removeReminder(reminder)} onAdd={() => openReminderFor()} onBack={() => setScreen("settings")} onOpenSettings={() => void Linking.openSettings().catch(() => setFeedback("기기 설정을 열지 못했어요."))} onOpenBattery={openBatterySettings} />
-            : <SettingsScreen reminderCount={reminders.length} onOpenAlerts={() => setScreen("alerts")} onOpenSettings={() => void Linking.openSettings().catch(() => setFeedback("기기 설정을 열지 못했어요."))} onOpenBattery={openBatterySettings} onOpenLocation={() => void Linking.openSettings().catch(() => setFeedback("기기 설정을 열지 못했어요."))} />}
+            : <SettingsScreen reminderCount={reminders.length} savedLocationCount={savedLocations.length} onOpenAlerts={() => setScreen("alerts")} onOpenSettings={() => void Linking.openSettings().catch(() => setFeedback("기기 설정을 열지 못했어요."))} onOpenBattery={openBatterySettings} onOpenLocation={() => setIsLocationPickerOpen(true)} />}
 
           {activeSnapshot && screen !== "alerts" && screen !== "settings" ? (
             <View style={styles.sourceCredit}>
@@ -421,13 +558,15 @@ export default function App() {
           {snapshot && freshness?.state !== "fresh" ? <RefreshBanner
             stale={freshness?.state === "stale"}
             busy={busy}
-            onRefresh={() => void requestCurrentLocation()}
+            onRefresh={() => setIsLocationPickerOpen(true)}
           /> : null}
 
           {screen !== "alerts" && screen !== "settings" && !loading ? <Text accessibilityLiveRegion="polite" style={styles.feedback}>{feedback}</Text> : null}
         </ScrollView>
         <BottomNavigation active={primaryScreen} onChange={changeScreen} />
         <ActivityPickerSheet visible={isActivityPickerOpen} selected={activity} onClose={() => setIsActivityPickerOpen(false)} onSelect={selectActivity} />
+        <LocationPickerSheet visible={isLocationPickerOpen} busy={busy} locations={savedLocations} onClose={() => setIsLocationPickerOpen(false)} onUseCurrent={() => void requestCurrentLocation()} onSearch={searchLocations} onSelect={(location) => void selectSavedLocation(location)} onChangeKind={changeSavedLocationKind} onRemove={deleteSavedLocation} />
+        <MetricDetailSheet detail={metricDetail} onClose={() => setMetricDetail(null)} />
         <ReminderSheet visible={isReminderSheetOpen} targetTime={reminderTargetTime ?? activeSnapshot?.bestTime ?? null} activityLabel={ACTIVITIES[activity].label} now={now} onClose={() => setIsReminderSheetOpen(false)} onSave={(minutes) => void saveReminder(minutes)} />
       </SafeAreaView>
     </SafeAreaProvider>
@@ -441,14 +580,14 @@ function RefreshBanner({ stale, busy, onRefresh }: { stale: boolean; busy: boole
   </View>;
 }
 
-function EmptyForecast({ availability, busy, onCurrent, onSeoul }: { availability: ReturnType<typeof getForecastAvailability> | null; busy: boolean; onCurrent: () => void; onSeoul: () => void }) {
+function EmptyForecast({ availability, busy, onCurrent, onLocations }: { availability: ReturnType<typeof getForecastAvailability> | null; busy: boolean; onCurrent: () => void; onLocations: () => void }) {
   const title = availability === "current-missing" ? "현재 시간 예보가 비어 있어요" : availability === "expired" ? "저장된 예보 시간이 지났어요" : "새 예보를 먼저 확인해요";
   return <View style={styles.emptyCard}>
     <View style={styles.emptyIcon}><MapPin size={27} color={colors.brandDeep} /></View>
     <Text accessibilityRole="header" style={styles.emptyTitle}>{title}</Text>
     <Text style={styles.emptyDescription}>한 번 확인하면 마지막 성공 예보를 기기에 저장해 오프라인에서도 볼 수 있어요.</Text>
     <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} onPress={onCurrent} style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null, busy ? styles.disabled : null]}><Text style={styles.primaryButtonText}>현재 위치로 확인</Text></Pressable>
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} onPress={onSeoul} style={({ pressed }) => [styles.secondaryButton, pressed ? styles.pressed : null, busy ? styles.disabled : null]}><Text style={styles.secondaryButtonText}>서울 예보로 둘러보기</Text></Pressable>
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} onPress={onLocations} style={({ pressed }) => [styles.secondaryButton, pressed ? styles.pressed : null, busy ? styles.disabled : null]}><Text style={styles.secondaryButtonText}>위치 검색·저장</Text></Pressable>
   </View>;
 }
 
@@ -463,7 +602,7 @@ function AlertsScreen({ reminders, feedback, onRemove, onAdd, onBack, onOpenSett
   </View>;
 }
 
-function SettingsScreen({ reminderCount, onOpenAlerts, onOpenSettings, onOpenBattery, onOpenLocation }: { reminderCount: number; onOpenAlerts: () => void; onOpenSettings: () => void; onOpenBattery: () => void; onOpenLocation: () => void }) {
+function SettingsScreen({ reminderCount, savedLocationCount, onOpenAlerts, onOpenSettings, onOpenBattery, onOpenLocation }: { reminderCount: number; savedLocationCount: number; onOpenAlerts: () => void; onOpenSettings: () => void; onOpenBattery: () => void; onOpenLocation: () => void }) {
   const open = (url: string) => void Linking.openURL(url).catch(() => undefined);
   return <View style={styles.screenStack}>
     <View style={styles.brandCard}>
@@ -473,18 +612,20 @@ function SettingsScreen({ reminderCount, onOpenAlerts, onOpenSettings, onOpenBat
     </View>
     <View style={styles.sectionHeading}><Text accessibilityRole="header" style={styles.screenTitle}>설정</Text><Text style={styles.screenDescription}>알림·위치·배터리 상태와 앱 정보를 확인해요.</Text></View>
     <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><BellRing size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>출발 알림</Text><Text style={styles.settingsDetail}>{reminderCount ? `${reminderCount}개의 알림이 저장되어 있어요.` : "저장된 알림이 없어요."}</Text></View></View><Pressable accessibilityRole="button" onPress={onOpenAlerts} style={styles.softButton}><Text style={styles.softButtonText}>내 알림 보기</Text></Pressable><Pressable accessibilityRole="button" onPress={onOpenSettings} style={styles.softButton}><Text style={styles.softButtonText}>기기 알림 설정 열기</Text></Pressable><Pressable accessibilityRole="button" onPress={onOpenBattery} style={styles.softButton}><Text style={styles.softButtonText}>배터리 제한 상태 확인하기</Text></Pressable></View>
-    <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><MapPin size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>위치와 개인정보</Text><Text style={styles.settingsDetail}>위치는 예보 확인 때만 사용하고 좌표는 저장하지 않아요. 백그라운드 위치·광고·추적은 사용하지 않아요.</Text></View></View><Pressable accessibilityRole="button" onPress={onOpenLocation} style={styles.softButton}><Text style={styles.softButtonText}>기기 위치 설정 열기</Text></Pressable></View>
+    <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><MapPin size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>저장 위치와 개인정보</Text><Text style={styles.settingsDetail}>{savedLocationCount ? `${savedLocationCount}개의 위치가 이 기기에 저장되어 있어요.` : "저장된 위치가 없어요."} 현재 위치는 요청할 때만 확인하며 저장 위치 좌표는 이 기기에만 보관해요. 백그라운드 위치·광고·추적은 사용하지 않아요.</Text></View></View><Pressable accessibilityRole="button" onPress={onOpenLocation} style={styles.softButton}><Text style={styles.softButtonText}>저장 위치 관리</Text></Pressable></View>
     <View style={styles.settingsCard}><View style={styles.settingsCardHeader}><View style={styles.settingsIcon}><ShieldCheck size={20} color={colors.brandDeep} /></View><View style={styles.settingsCopy}><Text style={styles.settingsTitle}>데이터와 지원</Text><Text style={styles.settingsDetail}>날씨·대기질 원자료를 활동별로 재계산한 참고 정보예요.</Text></View></View><Pressable accessibilityRole="link" onPress={() => open(OPEN_METEO_URL)} style={styles.softButton}><Text style={styles.softButtonText}>원자료 Open-Meteo</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(OPEN_METEO_LICENSE_URL)} style={styles.softButton}><Text style={styles.softButtonText}>CC BY 4.0 라이선스</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(SUPPORT_URL)} style={styles.softButton}><Text style={styles.softButtonText}>지원 센터</Text></Pressable><Pressable accessibilityRole="link" onPress={() => open(PRIVACY_URL)} style={styles.softButton}><Text style={styles.softButtonText}>개인정보처리방침</Text></Pressable></View>
-    <Text style={styles.versionText}>야외봄 v0.29.0 · kr.robom.outbom</Text>
+    <Text style={styles.versionText}>야외봄 v0.30.0 · kr.robom.outbom</Text>
   </View>;
 }
 
 function ReminderSheet({ visible, targetTime, activityLabel, now, onClose, onSave }: { visible: boolean; targetTime: string | null; activityLabel: string; now: Date; onClose: () => void; onSave: (minutes: number) => void }) {
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
   const [leadMinutes, setLeadMinutes] = useState(10);
   const isPast = !targetTime || new Date(targetTime).getTime() - leadMinutes * 60_000 <= now.getTime();
   return <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose} statusBarTranslucent>
-    <View style={styles.modalBackdrop}>
-      <View accessibilityViewIsModal style={styles.reminderSheet}>
+    <View style={[styles.modalBackdrop, adaptiveLayout.useCenteredModal ? styles.modalBackdropCentered : null]}>
+      <View accessibilityViewIsModal style={[styles.reminderSheet, { maxWidth: adaptiveLayout.modalMaxWidth }, adaptiveLayout.useCenteredModal ? styles.reminderSheetCentered : null]}>
         <View style={styles.sheetGrip} />
         <View style={styles.reminderHeader}><View><Text accessibilityRole="header" style={styles.reminderTitle}>출발 알림 설정</Text><Text style={styles.reminderDescription}>{targetTime ? `${activityLabel} 추천 시간 ${formatClock(targetTime)}` : "새 예보를 먼저 확인해 주세요."}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="알림 설정 닫기" onPress={onClose} style={styles.sheetClose}><Text style={styles.sheetCloseText}>닫기</Text></Pressable></View>
         <Text style={styles.reminderQuestion}>언제 알려드릴까요?</Text>
@@ -549,7 +690,9 @@ const styles = StyleSheet.create({
   externalButton: { width: 48, height: 48, alignItems: "center", justifyContent: "center", borderRadius: 16, backgroundColor: colors.card },
   versionText: { color: colors.muted, fontSize: 11, textAlign: "center" },
   modalBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(24,39,39,0.44)" },
-  reminderSheet: { gap: 16, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32, borderTopLeftRadius: 30, borderTopRightRadius: 30, backgroundColor: colors.paper },
+  modalBackdropCentered: { justifyContent: "center", alignItems: "center", padding: 24 },
+  reminderSheet: { width: "100%", gap: 16, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32, borderTopLeftRadius: 30, borderTopRightRadius: 30, backgroundColor: colors.paper },
+  reminderSheetCentered: { borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
   sheetGrip: { width: 44, height: 4, alignSelf: "center", borderRadius: 999, backgroundColor: colors.line },
   reminderHeader: { minHeight: 60, flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   reminderTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },

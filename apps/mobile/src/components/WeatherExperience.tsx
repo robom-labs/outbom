@@ -7,6 +7,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View
 } from "react-native";
 import {
@@ -33,7 +34,14 @@ import {
 import Svg, { Circle, Line, Path, Polyline, Rect, Text as SvgText } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ACTIVITIES, ACTIVITY_ORDER, type ActivityKey } from "../lib/activities";
+import { getAdaptiveLayout, percentageForColumns } from "../lib/adaptive-layout";
 import { type ForecastSlot, type RankedForecastWindow } from "../lib/forecast";
+import { getMetricDetails, type MetricDetail, type MetricKey } from "../lib/metric-details";
+import {
+  type ActivityDuration,
+  type PreparationCategory,
+  type PreparationPlan
+} from "../lib/preparation";
 
 export type PrimaryScreen = "today" | "recommendations" | "preparation" | "settings";
 
@@ -132,7 +140,7 @@ export function WeatherControls({
   busy,
   onOpenActivities,
   onSelectDate,
-  onRefreshLocation
+  onOpenLocation
 }: {
   activity: ActivityKey;
   locationName: string;
@@ -142,7 +150,7 @@ export function WeatherControls({
   busy: boolean;
   onOpenActivities: () => void;
   onSelectDate: (date: string) => void;
-  onRefreshLocation: () => void;
+  onOpenLocation: () => void;
 }) {
   const ActivityIcon = activityIcons[activity];
   return (
@@ -176,14 +184,14 @@ export function WeatherControls({
       </View>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${locationName}. 현재 위치 예보 새로 확인`}
+        accessibilityLabel={`${locationName}. 위치 바꾸기`}
         accessibilityState={{ disabled: busy }}
         disabled={busy}
-        onPress={onRefreshLocation}
+        onPress={onOpenLocation}
         style={({ pressed }) => [styles.locationBar, pressed ? styles.pressed : null, busy ? styles.disabled : null]}
       >
         <View style={styles.locationIcon}><MapPin size={20} color={colors.brandDeep} strokeWidth={2.2} /></View>
-        <Text numberOfLines={1} style={styles.locationText}>{busy ? "현재 위치 확인 중" : locationName}</Text>
+        <Text numberOfLines={1} style={styles.locationText}>{busy ? "위치 예보 확인 중" : locationName}</Text>
         <ChevronRight size={20} color={colors.muted} strokeWidth={2.2} />
       </Pressable>
     </View>
@@ -289,15 +297,15 @@ function Legend({ color, label }: { color: string; label: string }) {
   return <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: color }]} /><Text style={styles.legendText}>{label}</Text></View>;
 }
 
-function MetricTile({ icon: Icon, label, value, tone, isWorst }: { icon: IconType; label: string; value: string; tone: MetricTone; isWorst: boolean }) {
+function MetricTile({ icon: Icon, label, value, tone, isWorst, cardWidth, onPress }: { icon: IconType; label: string; value: string; tone: MetricTone; isWorst: boolean; cardWidth: ReturnType<typeof percentageForColumns>; onPress: () => void }) {
   const palette = toneColors(tone);
   return (
-    <View accessible accessibilityLabel={`${label} ${value}, ${palette.label}`} style={[styles.metricTile, { backgroundColor: palette.soft, borderColor: palette.line }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${label} ${value}, ${palette.label}. 상세 보기`} onPress={onPress} style={({ pressed }) => [styles.metricTile, { width: cardWidth, backgroundColor: palette.soft, borderColor: palette.line }, pressed ? styles.pressed : null]}>
       {isWorst ? <Text style={[styles.worstBadge, { backgroundColor: palette.ink }]}>가장 아쉬움</Text> : null}
       <View style={styles.metricTop}><Icon size={16} color={palette.ink} strokeWidth={2.2} /><Text style={[styles.metricLabel, { color: palette.ink }]}>{label}</Text></View>
       <Text style={[styles.metricNumber, { color: palette.ink }]}>{value}</Text>
-      <Text style={styles.metricGrade}>{palette.label}</Text>
-    </View>
+      <View style={styles.metricFooter}><Text style={styles.metricGrade}>{palette.label}</Text><ChevronRight size={15} color={palette.ink} /></View>
+    </Pressable>
   );
 }
 
@@ -307,7 +315,8 @@ export function TodayDashboard({
   activity,
   dayLabel,
   isReferenceOnly,
-  onAlarm
+  onAlarm,
+  onOpenMetric
 }: {
   slots: ForecastSlot[];
   initialTime: string;
@@ -315,7 +324,11 @@ export function TodayDashboard({
   dayLabel: string;
   isReferenceOnly: boolean;
   onAlarm: (time: string) => void;
+  onOpenMetric: (key: MetricKey, slot: ForecastSlot) => void;
 }) {
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
+  const metricWidth = percentageForColumns(adaptiveLayout.metricColumns);
   const [index, setIndex] = useState(() => {
     const exact = slots.findIndex((slot) => slot.time === initialTime);
     if (exact >= 0) return exact;
@@ -354,10 +367,10 @@ export function TodayDashboard({
       </View>
       {slots.length >= 2 ? <ScoreChart slots={slots} index={index} onIndexChange={setIndex} /> : null}
       {active ? <View style={styles.metricRow}>
-        <MetricTile icon={Thermometer} label="체감" value={`${Math.round(active.apparentTemperature)}°`} tone={tones.temperature} isWorst={worst[0] === "temperature"} />
-        <MetricTile icon={CloudRain} label="강수" value={active.precipitationProbability === null ? `${active.precipitation.toFixed(1)}㎜` : `${Math.round(active.precipitationProbability)}%`} tone={tones.rain} isWorst={worst[0] === "rain"} />
-        <MetricTile icon={Haze} label="미세" value={active.pm25 === null ? "—" : `${Math.round(active.pm25)}`} tone={tones.dust} isWorst={worst[0] === "dust"} />
-        <MetricTile icon={Wind} label="풍속" value={active.windSpeed.toFixed(1)} tone={tones.wind} isWorst={worst[0] === "wind"} />
+        <MetricTile cardWidth={metricWidth} icon={Thermometer} label="체감" value={`${Math.round(active.apparentTemperature)}°`} tone={tones.temperature} isWorst={worst[0] === "temperature"} onPress={() => onOpenMetric("feel", active)} />
+        <MetricTile cardWidth={metricWidth} icon={CloudRain} label="강수" value={active.precipitationProbability === null ? `${active.precipitation.toFixed(1)}㎜` : `${Math.round(active.precipitationProbability)}%`} tone={tones.rain} isWorst={worst[0] === "rain"} onPress={() => onOpenMetric("rain", active)} />
+        <MetricTile cardWidth={metricWidth} icon={Haze} label="미세" value={active.pm25 === null ? "—" : `${Math.round(active.pm25)}`} tone={tones.dust} isWorst={worst[0] === "dust"} onPress={() => onOpenMetric("dust", active)} />
+        <MetricTile cardWidth={metricWidth} icon={Wind} label="풍속" value={`${active.windSpeed.toFixed(1)}m/s`} tone={tones.wind} isWorst={worst[0] === "wind"} onPress={() => onOpenMetric("wind", active)} />
       </View> : null}
       {bestStart && bestEnd && bestPeak ? <View style={styles.bestBanner}>
         <View style={styles.bestCopy}>
@@ -373,12 +386,13 @@ export function TodayDashboard({
   );
 }
 
-function DetailMetric({ icon: Icon, value, label, tone }: { icon: IconType; value: string; label: string; tone: MetricTone }) {
+function DetailMetric({ icon: Icon, detail, tone, cardWidth, onPress }: { icon: IconType; detail: MetricDetail; tone: MetricTone; cardWidth: ReturnType<typeof percentageForColumns>; onPress: () => void }) {
   const palette = toneColors(tone);
-  return <View accessible accessibilityLabel={`${label} ${value}, ${palette.label}`} style={[styles.detailMetric, { backgroundColor: palette.soft, borderColor: palette.line }]}>
+  return <Pressable accessibilityRole="button" accessibilityLabel={`${detail.title} ${detail.value}, ${detail.grade}. 상세 보기`} onPress={onPress} style={({ pressed }) => [styles.detailMetric, { width: cardWidth, backgroundColor: palette.soft, borderColor: palette.line }, pressed ? styles.pressed : null]}>
     <View style={[styles.detailMetricIcon, { backgroundColor: colors.card }]}><Icon size={19} color={palette.ink} /></View>
-    <View><Text style={styles.detailMetricValue}>{value}</Text><Text style={styles.detailMetricLabel}>{label} · {palette.label}</Text></View>
-  </View>;
+    <View style={styles.detailMetricCopy}><Text style={styles.detailMetricValue}>{detail.value}</Text><Text style={styles.detailMetricLabel}>{detail.title} · {detail.grade}</Text></View>
+    <ChevronRight size={17} color={palette.ink} />
+  </Pressable>;
 }
 
 export function RecommendationDashboard({
@@ -387,7 +401,8 @@ export function RecommendationDashboard({
   activity,
   dayLabel,
   isReferenceOnly,
-  onAlarm
+  onAlarm,
+  onOpenMetric
 }: {
   slots: ForecastSlot[];
   windows: RankedForecastWindow[];
@@ -395,13 +410,18 @@ export function RecommendationDashboard({
   dayLabel: string;
   isReferenceOnly: boolean;
   onAlarm: (time: string) => void;
+  onOpenMetric: (key: MetricKey, slot: ForecastSlot) => void;
 }) {
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
+  const detailWidth = percentageForColumns(adaptiveLayout.metricColumns === 4 ? 3 : adaptiveLayout.metricColumns);
   const main = windows[0];
   const mainSlots = main ? slots.filter((slot) => slot.time === main.start || slot.time === main.secondHour) : [];
   const start = mainSlots[0] ?? slots[0];
   const maxRain = mainSlots.length ? Math.max(...mainSlots.map((slot) => slot.precipitationProbability ?? 0)) : null;
   const tones = start ? metricTone(start) : null;
   const sunset = start?.sunset ? clock(start.sunset) : null;
+  const metricDetails = start ? getMetricDetails(start, activity) : [];
   const reason = !main
     ? "남은 시간대 중 안전하게 권할 구간이 없어요."
     : main.recommended
@@ -430,19 +450,22 @@ export function RecommendationDashboard({
     </View>
     {windows.length > 1 ? <View style={styles.alternativeSection}>
       <Text style={styles.subsectionTitle}>다른 추천 시간</Text>
-      {windows.slice(1, 2).map((window) => <View key={window.start} style={styles.alternativeCard}>
+      {windows.slice(1, 3).map((window) => <View key={window.start} style={styles.alternativeCard}>
         <View style={styles.alternativeCopy}><Text style={styles.alternativeTime}>{twoHourLabel(window)}</Text><Text style={styles.alternativeDetail}>2시간 평균 {window.score}점 · 체감 {Math.round(window.apparentTemperature)}° · 비 {Math.round(window.precipitationProbability)}%</Text></View>
         <Pressable accessibilityRole="button" accessibilityLabel={`${twoHourLabel(window)} 알림 설정`} disabled={isReferenceOnly} onPress={() => onAlarm(window.start)} style={({ pressed }) => [styles.roundAlarmSoft, pressed ? styles.pressed : null, isReferenceOnly ? styles.disabled : null]}><BellRing size={21} color={colors.brandDeep} /></Pressable>
       </View>)}
     </View> : null}
     {start && tones ? <View style={styles.detailSection}>
       <Text style={styles.subsectionTitle}>상세 날씨</Text>
-      <View style={styles.detailGrid}>
-        <DetailMetric icon={Thermometer} value={`${Math.round(start.apparentTemperature)}°`} label="체감" tone={tones.temperature} />
-        <DetailMetric icon={CloudRain} value={start.precipitationProbability === null ? `${start.precipitation.toFixed(1)}㎜` : `${Math.round(start.precipitationProbability)}%`} label="비올확률" tone={tones.rain} />
-        <DetailMetric icon={Haze} value={start.pm25 === null ? "정보 없음" : `${Math.round(start.pm25)}`} label="미세먼지" tone={tones.dust} />
-        <DetailMetric icon={Sun} value={start.uvIndex.toFixed(1)} label="자외선" tone={start.uvIndex <= 2 ? "good" : start.uvIndex < 8 ? "ok" : "bad"} />
-      </View>
+      <View style={styles.detailGrid}>{metricDetails.map((detail) => {
+        const configuration: Record<MetricKey, { icon: IconType; tone: MetricTone }> = {
+          feel: { icon: Thermometer, tone: tones.temperature }, rain: { icon: CloudRain, tone: tones.rain }, dust: { icon: Haze, tone: tones.dust },
+          uv: { icon: Sun, tone: detail.grade === "좋음" ? "good" : detail.grade === "주의" ? "bad" : "ok" },
+          wind: { icon: Wind, tone: tones.wind }, humidity: { icon: CloudRain, tone: detail.grade === "좋음" ? "good" : detail.grade === "주의" ? "bad" : "ok" }
+        };
+        const item = configuration[detail.key];
+        return <DetailMetric key={detail.key} icon={item.icon} detail={detail} tone={item.tone} cardWidth={detailWidth} onPress={() => onOpenMetric(detail.key, start)} />;
+      })}</View>
     </View> : null}
     <Text style={styles.referenceNote}>{dayLabel} 예보는 참고 정보예요. 현장 안내와 실제 상태를 함께 확인하세요.</Text>
   </View>;
@@ -451,73 +474,98 @@ export function RecommendationDashboard({
 export function PreparationDashboard({
   activity,
   windowLabel,
-  tips,
+  duration,
+  plan,
+  checked,
+  onDurationChange,
+  onToggle,
   onAlarm
 }: {
   activity: ActivityKey;
   windowLabel: string;
-  tips: string[];
+  duration: ActivityDuration;
+  plan: PreparationPlan;
+  checked: string[];
+  onDurationChange: (duration: ActivityDuration) => void;
+  onToggle: (id: string) => void;
   onAlarm: () => void;
 }) {
-  const [checked, setChecked] = useState<string[]>([]);
-  const essentials: Record<ActivityKey, string[]> = {
-    walk: ["쿠션 좋은 신발", "물 한 병", "휴대폰 배터리"],
-    dog: ["리드줄과 배변봉투", "강아지 물", "노면 온도 확인"],
-    run: ["러닝화 끈", "물 한 병", "출발 전 5분 준비운동"],
-    hike: ["물과 행동식", "헤드랜턴과 보조배터리", "경로·하산 시간 공유"],
-    bike: ["헬멧", "브레이크와 타이어 공기압", "전조등·후미등"]
-  };
-  const items = [...new Set([...essentials[activity], ...tips])];
-  const toggle = (item: string) => setChecked((current) => current.includes(item) ? current.filter((value) => value !== item) : [...current, item]);
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
+  const durations: { key: ActivityDuration; label: string }[] = [{ key: "short", label: "짧게" }, { key: "normal", label: "보통" }, { key: "long", label: "길게" }];
+  const categories: { key: PreparationCategory; label: string; helper: string }[] = [
+    { key: "required", label: "필수", helper: "활동과 시간에 꼭 필요한 준비" },
+    { key: "weather", label: "날씨", helper: "비·햇빛·기온·대기질 대응" },
+    { key: "safety", label: "안전", helper: "어두움·경로·활동 위험 대비" },
+    { key: "optional", label: "선택", helper: "거리와 개인 상황에 따라 추가" }
+  ];
+  const doneCount = plan.items.filter((item) => checked.includes(item.id)).length;
   return <View style={styles.preparationStack}>
     <View style={styles.sectionHeading}>
-      <Text accessibilityRole="header" style={styles.sectionTitle}>나가기 전 준비</Text>
-      <Text style={styles.sectionDescription}>{windowLabel}의 실제 예보와 {ACTIVITIES[activity].label} 기준으로 정리했어요.</Text>
+      <Text accessibilityRole="header" style={styles.sectionTitle}>오늘의 준비</Text>
+      <Text style={styles.sectionDescription}>{windowLabel}의 실제 예보와 {ACTIVITIES[activity].label}·활동 시간을 함께 계산했어요.</Text>
     </View>
     <View style={styles.prepHero}>
       <View style={styles.prepHeroIcon}><Backpack size={28} color={colors.brandDeep} /></View>
       <View style={styles.prepHeroCopy}><Text style={styles.prepHeroKicker}>추천 시간</Text><Text style={styles.prepHeroTitle}>{windowLabel}</Text></View>
       <Pressable accessibilityRole="button" accessibilityLabel="추천 시간 알림 설정" onPress={onAlarm} style={({ pressed }) => [styles.roundAlarm, pressed ? styles.pressed : null]}><BellRing size={22} color={colors.brandDeep} /></Pressable>
     </View>
-    <View style={styles.prepCard}>
-      <View style={styles.prepCardHeading}><Text style={styles.subsectionTitle}>출발 전 전체 체크</Text><Text accessibilityLiveRegion="polite" style={styles.prepProgress}>{checked.length}/{items.length}</Text></View>
-      {items.map((item) => {
-        const done = checked.includes(item);
-        return <Pressable key={item} accessibilityRole="checkbox" accessibilityState={{ checked: done }} onPress={() => toggle(item)} style={({ pressed }) => [styles.prepRow, done ? styles.prepRowChecked : null, pressed ? styles.pressed : null]}>
-          <View style={[styles.prepCheck, done ? styles.prepCheckDone : null]}>{done ? <Check size={17} color="#fff" strokeWidth={3} /> : null}</View>
-          <Text style={[styles.prepText, done ? styles.prepTextChecked : null]}>{item}</Text>
-        </Pressable>;
-      })}
+    <View style={styles.clothingCard}>
+      <View style={styles.clothingHeading}><View><Text style={styles.prepHeroKicker}>활동 길이</Text><Text style={styles.clothingTitle}>{plan.clothingLevel}</Text></View><Text accessibilityLiveRegion="polite" style={styles.prepProgress}>{doneCount}/{plan.items.length}</Text></View>
+      <View accessibilityRole="tablist" style={styles.durationTabs}>{durations.map((item) => <Pressable key={item.key} accessibilityRole="tab" accessibilityState={{ selected: duration === item.key }} onPress={() => onDurationChange(item.key)} style={[styles.durationTab, duration === item.key ? styles.durationTabActive : null]}><Text style={duration === item.key ? styles.durationTextActive : styles.durationText}>{item.label}</Text></Pressable>)}</View>
+      <Text style={styles.clothingSummary}>{plan.clothingSummary}</Text>
     </View>
+    {plan.safetyHeadline ? <View accessibilityRole="alert" style={styles.safetyNotice}><Text style={styles.safetyNoticeTitle}>{plan.safetyHeadline}</Text><Text style={styles.safetyNoticeText}>{plan.safetyDetail}</Text></View> : null}
+    <View style={[styles.prepCategoryGrid, adaptiveLayout.useTwoColumns ? styles.prepCategoryGridWide : null]}>{categories.map((category) => {
+      const items = plan.items.filter((item) => item.category === category.key);
+      if (!items.length) return null;
+      return <View key={category.key} style={[styles.prepCard, adaptiveLayout.useTwoColumns ? styles.prepCardWide : null]}>
+        <View style={styles.prepCardHeading}><View style={styles.prepCategoryCopy}><Text style={styles.subsectionTitle}>{category.label}</Text><Text style={styles.prepCategoryHelper}>{category.helper} · {items.filter((item) => checked.includes(item.id)).length}/{items.length}</Text></View></View>
+        {items.map((item) => {
+          const done = checked.includes(item.id);
+          return <Pressable key={item.id} accessibilityRole="checkbox" accessibilityState={{ checked: done }} accessibilityLabel={`${item.label}. ${item.detail}`} onPress={() => onToggle(item.id)} style={({ pressed }) => [styles.prepRow, done ? styles.prepRowChecked : null, pressed ? styles.pressed : null]}>
+            <View style={[styles.prepCheck, done ? styles.prepCheckDone : null]}>{done ? <Check size={17} color="#fff" strokeWidth={3} /> : null}</View>
+            <View style={styles.prepItemCopy}><Text style={[styles.prepText, done ? styles.prepTextChecked : null]}>{item.label}</Text><Text style={styles.prepItemDetail}>{item.detail}</Text></View>
+          </Pressable>;
+        })}
+      </View>;
+    })}</View>
     <View style={styles.prepNotice}><Text style={styles.prepNoticeTitle}>출발 직전 한 번 더 확인해요</Text><Text style={styles.prepNoticeText}>기상 특보·현장 통제·노면 상태가 앱 예보보다 우선입니다.</Text></View>
   </View>;
 }
 
 export function BottomNavigation({ active, onChange }: { active: PrimaryScreen; onChange: (screen: PrimaryScreen) => void }) {
   const insets = useSafeAreaInsets();
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
   const items: { key: PrimaryScreen; label: string; icon: IconType }[] = [
     { key: "today", label: "오늘", icon: Sun },
     { key: "recommendations", label: "추천", icon: Sparkles },
     { key: "preparation", label: "준비", icon: Backpack },
     { key: "settings", label: "설정", icon: Settings }
   ];
-  return <View accessibilityRole="tablist" style={[styles.bottomNav, { paddingBottom: Math.max(8, insets.bottom), minHeight: 72 + Math.max(8, insets.bottom) }]}>
-    {items.map((item) => {
-      const Icon = item.icon;
-      const selected = active === item.key;
-      return <Pressable key={item.key} accessibilityRole="tab" accessibilityState={{ selected }} accessibilityLabel={`${item.label} 탭`} onPress={() => onChange(item.key)} style={({ pressed }) => [styles.navButton, pressed ? styles.pressed : null]}>
-        <Icon size={25} color={selected ? colors.brandDeep : colors.muted} strokeWidth={selected ? 2.4 : 2} />
-        <Text style={selected ? styles.navTextActive : styles.navText}>{item.label}</Text>
-      </Pressable>;
-    })}
+  return <View style={[styles.bottomNavDock, { paddingBottom: Math.max(8, insets.bottom) }]}>
+    <View accessibilityRole="tablist" style={[styles.bottomNav, { maxWidth: adaptiveLayout.navMaxWidth }]}>
+      {items.map((item) => {
+        const Icon = item.icon;
+        const selected = active === item.key;
+        return <Pressable key={item.key} accessibilityRole="tab" accessibilityState={{ selected }} accessibilityLabel={`${item.label} 탭`} onPress={() => onChange(item.key)} style={({ pressed }) => [styles.navButton, pressed ? styles.pressed : null]}>
+          <Icon size={25} color={selected ? colors.brandDeep : colors.muted} strokeWidth={selected ? 2.4 : 2} />
+          <Text style={selected ? styles.navTextActive : styles.navText}>{item.label}</Text>
+        </Pressable>;
+      })}
+    </View>
   </View>;
 }
 
 export function ActivityPickerSheet({ visible, selected, onClose, onSelect }: { visible: boolean; selected: ActivityKey; onClose: () => void; onSelect: (activity: ActivityKey) => void }) {
+  const { width, fontScale } = useWindowDimensions();
+  const adaptiveLayout = getAdaptiveLayout(width, fontScale);
+  const isWide = adaptiveLayout.widthClass !== "compact";
   return <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose} statusBarTranslucent>
-    <View style={styles.modalContainer}>
+    <View style={[styles.modalContainer, isWide ? styles.modalContainerWide : null]}>
       <Pressable accessibilityRole="button" accessibilityLabel="활동 선택 닫기" onPress={onClose} style={styles.modalBackdrop} />
-      <View accessibilityViewIsModal style={styles.activitySheet}>
+      <View accessibilityViewIsModal style={[styles.activitySheet, isWide ? { width: "100%", maxWidth: adaptiveLayout.modalMaxWidth, borderRadius: 30 } : null]}>
         <View style={styles.sheetHeader}><View><Text accessibilityRole="header" style={styles.sheetTitle}>활동을 선택하세요</Text><Text style={styles.sheetDescription}>같은 예보를 활동에 맞게 다시 계산해요.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="닫기" onPress={onClose} style={styles.sheetClose}><X size={22} color={colors.ink} /></Pressable></View>
         {ACTIVITY_ORDER.map((key) => {
           const Icon = activityIcons[key];
@@ -571,12 +619,13 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
   legendDot: { width: 10, height: 10, borderRadius: 4 },
   legendText: { color: colors.muted, fontSize: 11, fontWeight: "700" },
-  metricRow: { flexDirection: "row", gap: 7 },
-  metricTile: { minWidth: 0, flex: 1, minHeight: 88, justifyContent: "center", paddingHorizontal: 9, borderWidth: 1, borderRadius: 18 },
+  metricRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 10 },
+  metricTile: { minWidth: 0, minHeight: 88, justifyContent: "center", paddingHorizontal: 9, borderWidth: 1, borderRadius: 18 },
   metricTop: { flexDirection: "row", alignItems: "center", gap: 5 },
   metricLabel: { fontSize: 11, fontWeight: "900" },
   metricNumber: { marginTop: 5, fontSize: 21, fontWeight: "900", letterSpacing: -0.6 },
   metricGrade: { marginTop: 3, color: colors.muted, fontSize: 11 },
+  metricFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   worstBadge: { position: "absolute", top: -10, right: 5, zIndex: 2, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 999, color: "#fff", fontSize: 9, fontWeight: "900" },
   bestBanner: { minHeight: 86, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 15, paddingVertical: 12, borderWidth: 1, borderColor: "#c4e3ef", borderRadius: 22, backgroundColor: colors.brandSoft },
   bestCopy: { minWidth: 0, flex: 1 },
@@ -610,34 +659,56 @@ const styles = StyleSheet.create({
   roundAlarmSoft: { width: 50, height: 50, alignItems: "center", justifyContent: "center", borderRadius: 25, backgroundColor: colors.surface },
   detailSection: { gap: 10 },
   detailGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 12 },
-  detailMetric: { width: "48.5%", minHeight: 108, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, borderWidth: 1, borderRadius: 24 },
+  detailMetric: { minHeight: 108, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, borderWidth: 1, borderRadius: 24 },
   detailMetricIcon: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 12 },
+  detailMetricCopy: { minWidth: 0, flex: 1 },
   detailMetricValue: { color: colors.ink, fontSize: 23, fontWeight: "900" },
   detailMetricLabel: { marginTop: 5, color: colors.muted, fontSize: 11, lineHeight: 16 },
   referenceNote: { color: colors.muted, fontSize: 11, lineHeight: 17, textAlign: "center" },
   preparationStack: { gap: 18 },
+  prepCategoryGrid: { gap: 14 },
+  prepCategoryGridWide: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between" },
   prepHero: { minHeight: 110, flexDirection: "row", alignItems: "center", gap: 13, padding: 18, borderWidth: 1, borderColor: "#c4e3ef", borderRadius: 24, backgroundColor: colors.brandSoft },
   prepHeroIcon: { width: 54, height: 54, alignItems: "center", justifyContent: "center", borderRadius: 18, backgroundColor: colors.card },
   prepHeroCopy: { minWidth: 0, flex: 1 },
   prepHeroKicker: { color: colors.brandDeep, fontSize: 12, fontWeight: "900" },
   prepHeroTitle: { marginTop: 5, color: colors.ink, fontSize: 20, fontWeight: "900" },
+  clothingCard: { gap: 12, padding: 18, borderWidth: 1, borderColor: colors.line, borderRadius: 25, backgroundColor: colors.card },
+  clothingHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  clothingTitle: { marginTop: 4, color: colors.ink, fontSize: 22, fontWeight: "900" },
+  clothingSummary: { color: colors.ink2, fontSize: 13, lineHeight: 20 },
+  durationTabs: { flexDirection: "row", gap: 6, padding: 5, borderRadius: 17, backgroundColor: colors.surface },
+  durationTab: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 13 },
+  durationTabActive: { borderWidth: 1, borderColor: "#a9d7e9", backgroundColor: colors.brandSoft },
+  durationText: { color: colors.muted, fontSize: 13, fontWeight: "800" },
+  durationTextActive: { color: colors.brandDeep, fontSize: 13, fontWeight: "900" },
+  safetyNotice: { gap: 5, padding: 16, borderWidth: 1, borderColor: colors.badLine, borderRadius: 20, backgroundColor: colors.badSoft },
+  safetyNoticeTitle: { color: colors.bad, fontSize: 15, lineHeight: 21, fontWeight: "900" },
+  safetyNoticeText: { color: colors.ink2, fontSize: 12, lineHeight: 18 },
   prepCard: { gap: 10, padding: 18, borderWidth: 1, borderColor: colors.line, borderRadius: 25, backgroundColor: colors.card },
+  prepCardWide: { width: "48.8%" },
   prepCardHeading: { minHeight: 32, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   prepProgress: { minWidth: 48, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, overflow: "hidden", color: colors.brandDeep, backgroundColor: colors.brandSoft, fontSize: 11, fontWeight: "900", textAlign: "center" },
-  prepRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.line, borderRadius: 18, backgroundColor: colors.card },
+  prepCategoryCopy: { minWidth: 0, flex: 1 },
+  prepCategoryHelper: { marginTop: 4, color: colors.muted, fontSize: 11, lineHeight: 17 },
+  prepRow: { minHeight: 72, flexDirection: "row", alignItems: "flex-start", gap: 12, paddingHorizontal: 12, paddingVertical: 12, borderWidth: 1, borderColor: colors.line, borderRadius: 18, backgroundColor: colors.card },
   prepRowChecked: { borderColor: colors.goodLine, backgroundColor: colors.goodSoft },
   prepCheck: { width: 28, height: 28, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "#b8c5c1", borderRadius: 9, backgroundColor: colors.card },
   prepCheckDone: { borderColor: colors.good, backgroundColor: colors.good },
-  prepText: { minWidth: 0, flex: 1, color: colors.ink2, fontSize: 14, lineHeight: 21 },
+  prepItemCopy: { minWidth: 0, flex: 1 },
+  prepText: { color: colors.ink, fontSize: 14, lineHeight: 20, fontWeight: "900" },
   prepTextChecked: { color: colors.good, fontWeight: "800", textDecorationLine: "line-through" },
+  prepItemDetail: { marginTop: 4, color: colors.muted, fontSize: 12, lineHeight: 18 },
   prepNotice: { gap: 4, padding: 17, borderRadius: 20, backgroundColor: colors.surface },
   prepNoticeTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
   prepNoticeText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  bottomNav: { position: "absolute", right: 0, bottom: 0, left: 0, flexDirection: "row", alignItems: "flex-start", paddingHorizontal: 8, paddingTop: 7, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: "rgba(255,250,240,0.98)", shadowColor: "#665541", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 }, elevation: 8 },
+  bottomNavDock: { position: "absolute", right: 0, bottom: 0, left: 0, alignItems: "center", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: "rgba(255,250,240,0.98)", shadowColor: "#665541", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 }, elevation: 8 },
+  bottomNav: { width: "100%", minHeight: 72, flexDirection: "row", alignItems: "flex-start", paddingHorizontal: 8, paddingTop: 7 },
   navButton: { flex: 1, minHeight: 64, alignItems: "center", justifyContent: "center", gap: 4, borderRadius: 18 },
   navText: { color: colors.muted, fontSize: 12, fontWeight: "800" },
   navTextActive: { color: colors.brandDeep, fontSize: 12, fontWeight: "900" },
   modalContainer: { flex: 1, justifyContent: "flex-end" },
+  modalContainerWide: { alignItems: "center", justifyContent: "center", padding: 24 },
   modalBackdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(24,39,39,0.44)" },
   activitySheet: { gap: 9, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 32, borderTopLeftRadius: 30, borderTopRightRadius: 30, backgroundColor: colors.paper },
   sheetHeader: { minHeight: 60, flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },

@@ -3,11 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LAST_FORECAST_KEY,
   LEGACY_LAST_FORECAST_KEY,
+  PREPARATION_CHECKS_KEY,
+  SAVED_LOCATIONS_KEY,
   SELECTED_ACTIVITY_KEY,
   isForecastSnapshot,
   loadForecastSnapshot,
+  loadPreparationChecks,
+  loadSavedLocations,
   loadSelectedActivity,
   saveForecastSnapshot,
+  savePreparationChecks,
+  saveSavedLocations,
   saveSelectedActivity
 } from "../lib/storage";
 import { buildForecastSnapshot, type ForecastApiResponse } from "../lib/forecast";
@@ -97,5 +103,32 @@ describe("native local storage", () => {
 
     mockStorage.values.set(SELECTED_ACTIVITY_KEY, "unknown");
     await expect(loadSelectedActivity()).resolves.toBe("walk");
+  });
+
+  it("저장 위치는 유효한 항목만 보존한다", async () => {
+    const location = {
+      id: "37.5:127.0",
+      name: "고척동",
+      detail: "서울 구로구",
+      latitude: 37.5,
+      longitude: 127,
+      kind: "favorite" as const,
+      lastUsedAt: "2026-08-11T10:00:00.000Z"
+    };
+
+    expect(await saveSavedLocations([location])).toBe(true);
+    await expect(loadSavedLocations()).resolves.toEqual([location]);
+
+    mockStorage.values.set(SAVED_LOCATIONS_KEY, JSON.stringify([location, { name: "손상 위치" }]));
+    await expect(loadSavedLocations()).resolves.toEqual([location]);
+  });
+
+  it("준비물 체크 상태는 문자열 배열만 복구한다", async () => {
+    const checks = { "2026-08-11:run:18:00:long": ["water", "reflective"] };
+    expect(await savePreparationChecks(checks)).toBe(true);
+    await expect(loadPreparationChecks()).resolves.toEqual(checks);
+
+    mockStorage.values.set(PREPARATION_CHECKS_KEY, JSON.stringify({ valid: ["water", 1], broken: "water" }));
+    await expect(loadPreparationChecks()).resolves.toEqual({ valid: ["water"] });
   });
 });
